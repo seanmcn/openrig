@@ -333,7 +333,12 @@ export function providerRoutes(opts: ProviderRoutesOptions = {}): Hono {
     }
     const body = raw as Record<string, unknown>;
     const seat = body["seat"];
-    const toAccount = body["toAccount"];
+    const clearAccountHome = body["clearAccountHome"] === true;
+    if (body["clearAccountHome"] !== undefined && typeof body["clearAccountHome"] !== "boolean") return c.json({ error: "clearAccountHome must be true or false" }, 400);
+    if (clearAccountHome && (body["toAccount"] !== undefined || body["accountHome"] !== undefined || body["tokenFile"] !== undefined)) {
+      return c.json({ error: "clearAccountHome cannot select an account or token" }, 400);
+    }
+    const toAccount = body["toAccount"] ?? (clearAccountHome ? "default" : undefined);
     const forceUnsafe = body["forceUnsafe"] ?? false;
     if (typeof seat !== "string" || seat.trim() === "" || typeof toAccount !== "string" || toAccount.trim() === "") {
       return c.json({ error: "seat and toAccount are required" }, 400);
@@ -341,8 +346,8 @@ export function providerRoutes(opts: ProviderRoutesOptions = {}): Hono {
     if (typeof forceUnsafe !== "boolean") {
       return c.json({ error: "forceUnsafe must be a boolean" }, 400);
     }
-    if (body["accountHome"] !== undefined) {
-      if ((body["tokenFile"] !== undefined && typeof body["tokenFile"] !== "string") || typeof body["accountHome"] !== "string" || typeof body["reason"] !== "string" ||
+    if (body["accountHome"] !== undefined || clearAccountHome) {
+      if ((body["tokenFile"] !== undefined && typeof body["tokenFile"] !== "string") || (!clearAccountHome && typeof body["accountHome"] !== "string") || typeof body["reason"] !== "string" ||
           (body["model"] !== undefined && typeof body["model"] !== "string") ||
           (body["codexConfigProfile"] !== undefined && typeof body["codexConfigProfile"] !== "string") ||
           (body["dryRun"] !== undefined && typeof body["dryRun"] !== "boolean")) {
@@ -354,7 +359,7 @@ export function providerRoutes(opts: ProviderRoutesOptions = {}): Hono {
       const resolved = new SeatStatusService({ rigRepo }).getStatus(seat);
       if (!resolved.ok) return c.json(resolved, 404);
       const result = await runtimeSwitchService(c).setRuntime({ seatRef: seat, runtime: resolved.status.runtime ?? "",
-        accountHome: body["accountHome"], reason: body["reason"], dryRun: body["dryRun"] === true,
+        ...(clearAccountHome ? { clearAccountHome: true } : { accountHome: body["accountHome"] as string }), reason: body["reason"], dryRun: body["dryRun"] === true,
         ...(typeof body["tokenFile"] === "string" ? { accountToken: { label: toAccount, tokenFile: body["tokenFile"] } } : {}),
         requestedBy: transportSenderSession(c) ?? null,
         ...(typeof body["model"] === "string" ? { model: body["model"] } : {}),

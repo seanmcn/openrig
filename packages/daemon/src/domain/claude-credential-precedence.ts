@@ -8,6 +8,9 @@ export const OUTRANKING_TOKEN_ENV = [
   "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
 ] as const;
 
+/** Profile and federation selectors outrank stored login, but not an explicit subscription token. */
+export const ANTHROPIC_PROFILE_ENV = ["ANTHROPIC_PROFILE", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID"] as const;
+
 export interface CredentialConflict {
   name: string;
   source: string;
@@ -28,7 +31,7 @@ export interface CredentialPrecedence {
 /** One settings file's `apiKeyHelper` and outranking `env` entries, and with `storedLogin` its `env` block's
  *  `CLAUDE_CODE_OAUTH_TOKEN`. An absent file has none. */
 export function settingsFileConflicts(file: string, scope: string, read: (file: string) => string = (f) => fs.readFileSync(f, "utf8"),
-  opts: { storedLogin?: boolean; isolatedAccountHome?: boolean } = {}): { conflicts: CredentialConflict[]; instead?: CredentialConflict[]; checked?: string; notChecked?: string } {
+  opts: { storedLogin?: boolean; isolatedAccountHome?: boolean; profileSelectorsOnly?: boolean } = {}): { conflicts: CredentialConflict[]; instead?: CredentialConflict[]; checked?: string; notChecked?: string } {
   let text: string;
   try { text = read(file); } catch (err) {
     return (err as NodeJS.ErrnoException).code === "ENOENT"
@@ -39,12 +42,14 @@ export function settingsFileConflicts(file: string, scope: string, read: (file: 
   try { settings = JSON.parse(text) as typeof settings; } catch { return { conflicts: [], notChecked: `${scope} settings ${file} (not valid JSON)` }; }
   const remedy = `remove it from ${file} (OpenRig doesn't edit settings files)`;
   const conflicts: CredentialConflict[] = [];
-  if (settings?.apiKeyHelper !== undefined) conflicts.push({ name: "apiKeyHelper", source: `${scope} settings ${file}`, remedy });
+  if (!opts.profileSelectorsOnly && settings?.apiKeyHelper !== undefined) conflicts.push({ name: "apiKeyHelper", source: `${scope} settings ${file}`, remedy });
   const env = settings?.env && typeof settings.env === "object" ? settings.env as Record<string, unknown> : {};
-  for (const name of [...OUTRANKING_TOKEN_ENV, ...(opts.isolatedAccountHome ? ["ANTHROPIC_BASE_URL"] : [])]) {
+  const names = opts.profileSelectorsOnly ? ANTHROPIC_PROFILE_ENV
+    : [...OUTRANKING_TOKEN_ENV, ...(opts.isolatedAccountHome ? ["ANTHROPIC_BASE_URL", ...ANTHROPIC_PROFILE_ENV] : [])];
+  for (const name of names) {
     if (env[name] !== undefined) conflicts.push({ name, source: `the env block of ${scope} settings ${file}`, remedy });
   }
-  const instead = opts.storedLogin && env.CLAUDE_CODE_OAUTH_TOKEN !== undefined
+  const instead = opts.storedLogin && !opts.profileSelectorsOnly && env.CLAUDE_CODE_OAUTH_TOKEN !== undefined
     ? [{ name: "CLAUDE_CODE_OAUTH_TOKEN", source: `the env block of ${scope} settings ${file}`, remedy }] : [];
   return { conflicts, ...(instead.length ? { instead } : {}), checked: `${scope} settings ${file}` };
 }
@@ -71,11 +76,12 @@ export function projectRootForLocalSettings(cwd: string): string | null {
 export function isolatedClaudeAccountProblem(home: string, cwd: string, selectedToken: boolean): string | null {
   const root = projectRootForLocalSettings(cwd) ?? cwd;
   const files = [
-    ...(selectedToken ? [path.join(home, "settings.json")] : []),
+    path.join(home, "settings.json"),
     ...new Set([root, cwd].flatMap(dir => [path.join(dir, ".claude/settings.json"), path.join(dir, ".claude/settings.local.json")])),
   ];
   for (const file of files) {
-    const check = settingsFileConflicts(file, "account or project", undefined, { storedLogin: true, isolatedAccountHome: true });
+    const check = settingsFileConflicts(file, "account or project", undefined, { storedLogin: true, isolatedAccountHome: true,
+      profileSelectorsOnly: file === path.join(home, "settings.json") && !selectedToken });
     if (check.conflicts.length || check.instead?.length || check.notChecked) {
       return "Claude credential settings could override the selected account home or token; remove those settings or make them readable before switching. Nothing changed.";
     }

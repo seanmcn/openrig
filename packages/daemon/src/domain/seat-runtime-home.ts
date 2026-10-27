@@ -1,4 +1,4 @@
-import { OUTRANKING_TOKEN_ENV } from "./claude-credential-precedence.js";
+import { ANTHROPIC_PROFILE_ENV, OUTRANKING_TOKEN_ENV } from "./claude-credential-precedence.js";
 import os from "node:os";
 import path from "node:path";
 import type Database from "better-sqlite3";
@@ -9,7 +9,7 @@ export const RUNTIME_HOME_VAR = { "claude-code": "CLAUDE_CONFIG_DIR", codex: "CO
 export type HomeRuntime = keyof typeof RUNTIME_HOME_VAR;
 
 /** Provider environment excluded by an explicit isolated account-home selection. */
-export const ACCOUNT_HOME_PROVIDER_ENV = [...OUTRANKING_TOKEN_ENV, "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL",
+export const ACCOUNT_HOME_PROVIDER_ENV = [...OUTRANKING_TOKEN_ENV, ...ANTHROPIC_PROFILE_ENV, "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL",
   "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "OPENAI_FEDERATION_RULE_ID", "OPENAI_IDENTITY_TOKEN_FILE", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_ORGANIZATION", "OPENAI_PROJECT", "OPENAI_PROJECT_ID", "AWS_BEARER_TOKEN_BEDROCK"] as const;
 
 export interface SeatRuntimeHome {
@@ -39,9 +39,9 @@ export function seatAccountHome(db: Database.Database, nodeId: string | null | u
  *  the declaration: the daemon's explicit value and the native default stay with each caller, so a seat that declares
  *  nothing resolves exactly as before. A configured home names where the seat's runtime looks; it isn't proof of which
  *  login a running process uses. */
-export function seatRuntimeHome(db: Database.Database, nodeId: string | null | undefined, runtime: HomeRuntime): SeatRuntimeHome {
+export function seatRuntimeHome(db: Database.Database, nodeId: string | null | undefined, runtime: HomeRuntime, ignoreAccountHome = false): SeatRuntimeHome {
   if (!nodeId) return {};
-  const accountHome = seatAccountHome(db, nodeId, runtime);
+  const accountHome = ignoreAccountHome ? undefined : seatAccountHome(db, nodeId, runtime);
   if (accountHome) return { home: accountHome, source: "account-switch" };
   let row: { member: string | null; rig: string | null } | undefined;
   try {
@@ -61,8 +61,8 @@ export function seatRuntimeHome(db: Database.Database, nodeId: string | null | u
 /** The home a seat's launches and OpenRig's readers use: its own, else the daemon's explicit value. Undefined means the
  *  runtime's native default. */
 export function effectiveRuntimeHome(db: Database.Database, nodeId: string | null | undefined, runtime: HomeRuntime,
-  daemonHome: string | undefined): string | undefined {
-  return seatRuntimeHome(db, nodeId, runtime).home ?? daemonHome;
+  daemonHome: string | undefined, ignoreAccountHome = false): string | undefined {
+  return seatRuntimeHome(db, nodeId, runtime, ignoreAccountHome).home ?? daemonHome;
 }
 
 /** Every distinct home seats declare for a runtime (absolute values only), for readers that find a record by an id that is

@@ -1,4 +1,4 @@
-import { ACCOUNT_HOME_PROVIDER_ENV } from "./seat-runtime-home.js";
+import { ACCOUNT_HOME_PROVIDER_ENV, RUNTIME_HOME_VAR, type HomeRuntime } from "./seat-runtime-home.js";
 import { accessSync, closeSync, constants, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -85,7 +85,7 @@ export class SeatLaunchEnvironment {
     private readonly daemonCwd: string,
     private readonly cliPath?: string,
     private readonly codexHome?: string,
-    private readonly selectedAccountHome?: (nodeId: string, runtime: string) => string | undefined) {}
+    private readonly selectedAccountHome?: (nodeId: string, runtime: string, ignoreAccountHome?: boolean) => string | undefined) {}
 
   private rigBin(): string {
     const cli = realpathSync(this.cliPath ?? pairedCli());
@@ -106,14 +106,18 @@ export class SeatLaunchEnvironment {
   async command(session: string, command: string, target: { codexCwd?: string; nodeId?: string; generation?: string; runtime?: string;
     /** The seat's own CODEX_HOME when it declares one; it wins over the daemon's. */
     codexHome?: string;
-    accountHome?: string;
+    accountHome?: string | null;
     /** A Claude seat's own token step (claude-seat-token.ts), run before Claude in the staged subshell. A POSIX pane only:
      *  a caller whose command comes back without it knows the token wasn't applied. */
     claudeTokenStep?: string } = {}): Promise<string> {
-    const accountHome = target.accountHome ?? (target.nodeId && target.runtime ? this.selectedAccountHome?.(target.nodeId, target.runtime) : undefined);
+    const accountHome = target.accountHome !== undefined ? target.accountHome : (target.nodeId && target.runtime ? this.selectedAccountHome?.(target.nodeId, target.runtime) : undefined);
+    const clearing = target.accountHome === null;
+    const configuredHome = clearing && target.nodeId && target.runtime ? this.selectedAccountHome?.(target.nodeId, target.runtime, true) : undefined;
+    const homeVar = RUNTIME_HOME_VAR[target.runtime as HomeRuntime];
+    const clearStep = clearing && homeVar ? `unset ${homeVar}; ${configuredHome ? `export ${homeVar}=${shellQuote(configuredHome)}; ` : ""}` : "";
     const codexHome = (target.runtime === "codex" ? accountHome : undefined) ?? target.codexHome ?? this.codexHome;
     const searchPath = this.sessionEnv.PATH;
-    const accountStep = accountHome ? `unset ${ACCOUNT_HOME_PROVIDER_ENV.join(" ")}; ` : "";
+    const accountStep = clearStep + (accountHome ? `unset ${ACCOUNT_HOME_PROVIDER_ENV.join(" ")}; ` : "");
     const codexEnv = target.codexCwd !== undefined
       ? [searchPath ? `PATH=${shellQuote(searchPath)}` : "", codexHome ? `CODEX_HOME=${shellQuote(codexHome)}` : ""].filter(Boolean)
       : [];
@@ -121,7 +125,7 @@ export class SeatLaunchEnvironment {
     try {
       // Nushell does not expand "$PATH". Keep its pre-existing literal command.
       const shell = path.basename(await this.tmux.getPaneCommand(session) ?? "").replace(/^-/, "");
-      if (shell === "nu" || shell === "nu.exe" || (accountHome && !["bash", "zsh", "sh", "dash", "ksh", "mksh"].includes(shell))) throw new Error("Non-POSIX pane");
+      if (shell === "nu" || shell === "nu.exe" || ((accountHome || clearing) && !["bash", "zsh", "sh", "dash", "ksh", "mksh"].includes(shell))) throw new Error("Non-POSIX pane");
       // Pi keeps its existing command on shells where this PATH expression is not supported.
       if (target.runtime === "pi" && !["bash", "zsh", "sh", "dash", "ksh"].includes(shell)) {
         throw new Error("Unsupported Pi pane shell");
@@ -180,9 +184,9 @@ export class SeatLaunchEnvironment {
     } catch {
       // This best-effort correction is not a new launch admission gate. Do not
       // include error details: transport errors may contain environment values.
-      console.warn(accountHome ? "[seat launch] Isolated account launch unavailable; no agent started."
+      console.warn(accountHome || clearing ? "[seat launch] Isolated account launch unavailable; no agent started."
         : "[seat launch] Environment correction unavailable; using the previous launch command.");
-      return accountHome ? "printf '%s\\n' 'OpenRig: isolated account launch unavailable; no agent started.' >&2; false" : fallback;
+      return accountHome || clearing ? "printf '%s\\n' 'OpenRig: isolated account launch unavailable; no agent started.' >&2; false" : fallback;
     }
   }
 }

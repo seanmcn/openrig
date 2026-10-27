@@ -81,6 +81,8 @@ export interface SetRuntimeInput {
   codexConfigProfile?: string;
   /** Isolated target native account directory; never credential values. */
   accountHome?: string;
+  /** Return to configured member/rig/daemon/native selection, not a historical credential. */
+  clearAccountHome?: boolean;
   accountToken?: ClaudeSeatTokenRef;
   /** Target native permission selection; absent or "inherit" means member and rig policy. */
   permissionMode?: string;
@@ -104,7 +106,7 @@ export interface RuntimeSwitchPlan {
   seat: { ref: string; nodeId: string; rigId: string; session: string };
   from: string;
   to: string;
-  accountHome?: string;
+  accountHome?: string | null;
   accountToken?: ClaudeSeatTokenRef;
   settings: RuntimeSwitchMaterials["settings"];
   permission: { mode: string; source: "explicit" | "member_or_rig_policy" };
@@ -169,6 +171,8 @@ export class SeatRuntimeSwitchService {
       return refuse("invalid_runtime_settings", "Choose --runtime codex or --runtime claude-code.");
     }
     const target: SwitchRuntime = input.runtime;
+    if (input.clearAccountHome !== undefined && typeof input.clearAccountHome !== "boolean") return refuse("invalid_runtime_settings", "clearAccountHome must be true or false.");
+    if (input.clearAccountHome && (input.accountHome !== undefined || input.accountToken !== undefined)) return refuse("invalid_runtime_settings", "Choose either an account home/token or clearAccountHome, not both.");
     if (input.accountHome !== undefined) {
       if (typeof input.accountHome !== "string" || !nodePath.isAbsolute(input.accountHome) || /[\0\r\n]/.test(input.accountHome)) {
         return refuse("invalid_runtime_settings", "accountHome must be an absolute directory path on one line.");
@@ -224,8 +228,8 @@ export class SeatRuntimeSwitchService {
     }
     const binding = sessionRegistry.getBindingForNode(node.id);
     const sessionName = binding?.tmuxSession ?? null;
-    const base = { seat: { ref: seatRef, nodeId: node.id, rigId: node.rigId, session: sessionName ?? "" }, from: node.runtime, to: target };
-    if (node.runtime === target && input.accountHome === undefined) {
+    const base = { seat: { ref: seatRef, nodeId: node.id, rigId: node.rigId, session: sessionName ?? "" }, from: node.runtime, to: target, ...(input.clearAccountHome ? { accountHome: null } : {}) };
+    if (node.runtime === target && input.accountHome === undefined && !(input.clearAccountHome && node.accountHome)) {
       if (explicit.model || explicit.effort || explicit.codexConfigProfile || explicit.permissionMode) {
         return refuse("runtime_unchanged", `${seatRef} already runs ${target}.`,
           "Change settings within one runtime with rig seat set-model, rig seat set-effort or rig seat set-permissions.");
@@ -376,7 +380,7 @@ export class SeatRuntimeSwitchService {
         advisor: materials.settings.advisor.value, codexConfigProfile: materials.settings.codexConfigProfile.value,
         claudePermissions: override.claudePermissions, kernelAuthority: override.kernelAuthority, teamPermissionDefault: override.teamPermissionDefault,
         nonInterruptive: rigRepo.getRigNonInterruptive(node.rigId), launchPosture, ...(permissionMode ? { permissionMode } : {}),
-        seatEnv: withPluginDirs({ ...rigRepo.getEffectiveSeatEnv(node.id),
+        seatEnv: withPluginDirs({ ...rigRepo.getEffectiveSeatEnv(node.id, ctx.input.accountHome === undefined),
           ...(ctx.input.accountHome !== undefined ? { [RUNTIME_HOME_VAR[target]]: ctx.input.accountHome } : {}) }, [corePluginDir, target === "claude-code" ? materials.seatSkills.pluginDir : undefined]),
         ...((corePluginDir || codexCorePluginDir) && node.cwd ? { seatProjectDir: node.cwd } : {}) },
       onPaneCreated: (pane) => {
@@ -384,7 +388,8 @@ export class SeatRuntimeSwitchService {
         db.prepare("UPDATE seat_runtime_switches SET successor_pane = ?, updated_at = ? WHERE id = ?").run(pane, stamp(), id);
       },
       staged: { prepare: (binding, adapter) => materials.prepare(binding, adapter),
-        binding: { ...materials.bindingAdditions(), ...(ctx.input.accountHome !== undefined ? { accountHome: ctx.input.accountHome, accountToken: ctx.input.accountToken ?? null } : {}), runtimeSwitchFrom: { runtime: node.runtime!, session: sessionName, pane: ctx.predecessorPane, generation: ctx.predecessorGeneration } } },
+        binding: { ...materials.bindingAdditions(), ...(ctx.input.accountHome !== undefined ? { accountHome: ctx.input.accountHome, accountToken: ctx.input.accountToken ?? null }
+          : ctx.input.clearAccountHome || node.accountHome ? { accountHome: null, ...(node.accountHome ? { accountToken: null } : {}) } : {}), runtimeSwitchFrom: { runtime: node.runtime!, session: sessionName, pane: ctx.predecessorPane, generation: ctx.predecessorGeneration } } },
     });
     if (!launch.ok) {
       const attention = launch.code === "successor_attention_required" ? " It is waiting at a login, trust or approval prompt." : "";
@@ -493,7 +498,7 @@ export class SeatRuntimeSwitchService {
         .run(target, materials.settings.model.value, materials.settings.effort.value, materials.settings.advisor.value, materials.settings.codexConfigProfile.value,
           ...(spec ? [spec.name, spec.version, spec.hash, spec.restorePolicy] : []), ctx.sessionName, at, node.id);
       db.prepare("UPDATE nodes SET account_home = ?, claude_token_ref = CASE WHEN ? THEN ? ELSE claude_token_ref END WHERE id = ?")
-        .run(ctx.input.accountHome ?? null, ctx.input.accountHome !== undefined ? 1 : 0,
+        .run(ctx.input.accountHome ?? null, ctx.input.accountHome !== undefined || node.accountHome ? 1 : 0,
           ctx.input.accountToken ? JSON.stringify(ctx.input.accountToken) : null, node.id);
       new NativePermissionStore(db).write(node.id, ctx.selection, ctx.input.requestedBy?.trim() || ctx.sessionName, ctx.input.reason);
       db.prepare(`INSERT OR REPLACE INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)`)

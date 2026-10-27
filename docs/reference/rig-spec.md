@@ -481,6 +481,29 @@ rig provider switch --seat dev-impl@my-rig --to-account claude-plan \
 # Across runtimes, use set-runtime with --account-home, --token-file and --account-label.
 ```
 
+Return to the seat's configured login selection explicitly:
+
+```sh
+rig provider switch --seat dev-impl@my-rig --clear-account-home --reason "The plan reset" --dry-run
+rig provider switch --seat dev-impl@my-rig --clear-account-home --reason "The plan reset"
+# Across runtimes: rig seat set-runtime dev-impl@my-rig --runtime claude-code --clear-account-home --reason "Return to configured login"
+```
+
+The clear uses the same successor-first switch and starts a fresh conversation with a handover. It removes the stored
+account-home override and its associated token reference only after confirmation. Before it starts, the successor uses
+the member's or rig's configured home, then the daemon's selection, then the native default, just as an ordinary launch
+does. An unrelated legacy per-seat token is preserved when there was no account-home override. This returns to the
+configuration in force now; it does not restore historical credential bytes or remember a prior login. Use clear on its
+own, without `--to-account`, `--stored-login`, `--account-home` or a new token reference.
+
+**Anthropic profile limitation.** An isolated Claude launch removes `ANTHROPIC_PROFILE`,
+`ANTHROPIC_FEDERATION_RULE_ID` and `ANTHROPIC_ORGANIZATION_ID` from its inherited environment, and refuses profile
+selectors in the selected home's or project's settings `env` blocks. An active or default profile in Anthropic's own
+configuration directory can still override a stored Claude login: `CLAUDE_CONFIG_DIR` does not isolate that directory.
+OpenRig does not change `ANTHROPIC_CONFIG_DIR` or rewrite global profiles. Check or deselect that profile yourself before
+using stored-login account homes, and verify the running account privately. An explicit subscription token has higher
+precedence than these profile selectors; the legacy subscription-token switch retains that precedence.
+
 Only the token's label and file path enter OpenRig. Its launch reads the token; if the required file becomes unusable,
 no agent starts. An API-home selection without `--token-file` clears an older seat token reference at commit. Its own
 API helper may stay in that home's user settings. A selected plan token refuses a home whose API helper or credential

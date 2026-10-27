@@ -14,8 +14,8 @@ export interface NodeBinding extends Binding {
   /** Claude-only, session-scoped Advisor model. */
   advisor?: string;
   codexConfigProfile?: string;
-  /** A staged account-home selection, not committed on the node until confirmation. */
-  accountHome?: string;
+  /** A staged account-home selection; null explicitly returns to configured defaults before commit. */
+  accountHome?: string | null;
   accountToken?: import("./claude-seat-token.js").ClaudeSeatTokenRef | null;
   claudePermissions?: import("./claude-permission-rules.js").ClaudePermissionRules;
   /** Rebuild only: a process/conversation-bound native predecessor policy. */

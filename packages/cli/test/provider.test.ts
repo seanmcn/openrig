@@ -91,6 +91,33 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
     expect(JSON.parse(result.logs.at(-1)!)).toMatchObject({ ok: true });
   });
 
+  it("returns to configured defaults through an acknowledged read-only clear plan", async () => {
+    const before = seen.length;
+    const args = ["switch", "--seat", "dev-a@rig", "--clear-account-home", "--reason", "Plan reset"];
+    const dry = await run([...args, "--dry-run", "--json"], runningDeps(port));
+    expect(dry.exitCode).toBeFalsy();
+    expect(JSON.parse(dry.logs[0]!)).toMatchObject({ accountHome: null, dryRun: true });
+    expect(seen.slice(before).some(r => r.url === "/api/provider/switch")).toBe(false);
+    const result = await run(args, runningDeps(port));
+    expect(result.exitCode).toBeFalsy();
+    expect(JSON.parse(seen.at(-1)!.body)).toEqual({ seat: "dev-a@rig", clearAccountHome: true, reason: "Plan reset", dryRun: false });
+  });
+
+  it("refuses a clear that an older daemon does not explicitly acknowledge", async () => {
+    const before = seen.length;
+    const result = await run(["switch", "--seat", "old-daemon@rig", "--clear-account-home", "--reason", "Plan reset", "--json"], runningDeps(port));
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.logs[0]!)).toMatchObject({ code: "account_home_switch_unavailable" });
+    expect(seen.slice(before).some(r => r.url === "/api/provider/switch")).toBe(false);
+  });
+
+  it.each([["--stored-login"], ["--to-account", "other"], ["--token-file", "/tokens/new"], ["--account-home", "/accounts/new"]])("refuses conflicting clear selectors %j before requesting a switch", async selectors => {
+    const before = seen.length;
+    const result = await run(["switch", "--seat", "dev-a@rig", "--clear-account-home", "--reason", "Plan reset", ...selectors], runningDeps(port));
+    expect(result.exitCode).toBe(1);
+    expect(seen.length).toBe(before);
+  });
+
   it("requires a reason before starting an account-home switch", async () => {
     const before = seen.length;
     const result = await run(["switch", "--seat", "dev-a@rig", "--to-account", "api-account", "--account-home", "/accounts/api"], runningDeps(port));
@@ -135,7 +162,8 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
       if (path?.startsWith("/api/seat/status/")) return send(200, { runtime: "codex" });
       if (path?.startsWith("/api/seat/set-runtime/")) {
         const request = JSON.parse(body);
-        return send(200, { ok: true, dryRun: true, accountHome: request.accountHome, from: "codex", to: "codex",
+        if (path.includes("old-daemon")) return send(200, { ok: true, dryRun: true });
+        return send(200, { ok: true, dryRun: true, accountHome: request.clearAccountHome ? null : request.accountHome, from: "codex", to: "codex",
           settings: { model: { value: "gpt-5.5", source: "explicit" }, effort: { value: null, source: "native_default" } },
           dropped: [{ setting: "Codex profile", value: "old-profile" }], costs: ["A fresh conversation carries only the handover."],
           ...(request.tokenFile ? { accountToken: { label: request.accountLabel, tokenFile: request.tokenFile } } : {}) });
@@ -152,7 +180,7 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
         if (body.includes("bad")) return send(400, { error: "invalid target account" });
         if (JSON.parse(body).toAccount === "recovery-pending") return send(200, { ok: true, changed: true,
           recoveryPending: true, warnings: ["Run rig seat set-runtime dev-a@rig --recover before retrying."] });
-        if (JSON.parse(body).accountHome) return send(200, { ok: true, changed: true, recoveryPending: false });
+        if (JSON.parse(body).accountHome || JSON.parse(body).clearAccountHome) return send(200, { ok: true, changed: true, recoveryPending: false });
         return send(200, { outcome: "succeeded" });
       }
       return send(500, { error: "not found" });

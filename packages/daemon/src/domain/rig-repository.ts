@@ -421,13 +421,13 @@ export class RigRepository {
    *  a restore and a handover successor all read this, so they cannot disagree. A CLAUDE_CONFIG_DIR or
    *  CODEX_HOME that isn't an absolute path is left out: OpenRig reports it as ignored (seat-runtime-home.ts),
    *  so the runtime resolves as if the seat declared none. */
-  getEffectiveSeatEnv(nodeId: string): SeatEnv {
+  getEffectiveSeatEnv(nodeId: string, ignoreAccountHome = false): SeatEnv {
     if (!this.hasNodeColumn("env_json")) return {};
     const row = this.db.prepare("SELECT rig_id, env_json FROM nodes WHERE id = ?")
       .get(nodeId) as { rig_id: string; env_json: string | null } | undefined;
     if (!row) return {};
     const env = withoutIgnoredRuntimeHomes(mergeSeatEnv(this.getRigEnv(row.rig_id), parseStoredSeatEnv(row.env_json)));
-    for (const runtime of ["codex", "claude-code"] as const) {
+    for (const runtime of ignoreAccountHome ? [] : ["codex", "claude-code"] as const) {
       const accountHome = seatAccountHome(this.db, nodeId, runtime);
       if (accountHome) env[RUNTIME_HOME_VAR[runtime]] = accountHome;
     }

@@ -82,6 +82,17 @@ describe("rig seat set-runtime", () => {
     expect(exitCode).toBeFalsy();
   });
 
+  it("requires an explicit null-home acknowledgement before clearing the account selection", async () => {
+    const args = ["dev.impl@my-rig", "--runtime", "claude-code", "--clear-account-home", "--reason", "Plan reset", "--json", "--dry-run"];
+    const old = await run({ status: 200, data: plan }, args);
+    expect(old.exitCode).toBe(1);
+    expect(old.calls).toHaveLength(1);
+    const accepted = await run({ status: 200, data: { ...plan, accountHome: null } }, args);
+    expect(accepted.exitCode).toBeFalsy();
+    expect(accepted.calls[0]!.body).toMatchObject({ clearAccountHome: true, dryRun: true });
+    expect(JSON.parse(accepted.logs[0]!)).toMatchObject({ accountHome: null });
+  });
+
   it("a human dry run identifies the selected account home and token reference without reading credentials", async () => {
     const selected = { ...plan, accountHome: "/accounts/claude-plan",
       accountToken: { label: "work-plan", tokenFile: "/tokens/work-plan" } };

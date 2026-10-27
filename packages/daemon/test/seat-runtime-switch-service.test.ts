@@ -158,6 +158,64 @@ describe("live seat runtime switch", () => {
     expect(rigRepo.getRig((db.prepare("SELECT rig_id FROM nodes WHERE id = ?").get(nodeId) as { rig_id: string }).rig_id)?.nodes.find(n => n.id === nodeId)?.claudeTokenRef?.label).toBe("old");
   });
 
+  it.each([true, false])("an explicit return to configured login stages without the old override and commits only after confirmation (%s)", async confirms => {
+    const oldHome = path.join(home, "old-account"); fs.mkdirSync(oldHome);
+    const oldToken = JSON.stringify({ label: "old-account", tokenFile: path.join(home, "old-token") });
+    db.prepare("UPDATE nodes SET account_home = ?, claude_token_ref = ?, env_json = ? WHERE id = ?")
+      .run(oldHome, oldToken, JSON.stringify({ CODEX_HOME: "/accounts/configured" }), nodeId);
+    const target = adapter("codex");
+    vi.mocked(target.launchHarness).mockImplementation(async binding => {
+      expect(binding.accountHome).toBeNull();
+      expect(binding.accountToken).toBeNull();
+      expect(rigRepo.getEffectiveSeatEnv(nodeId).CODEX_HOME).toBe(oldHome);
+      return { ok: true };
+    });
+    const svc = service({ runtimeAdapters: { codex: target } });
+    expect(await svc.setRuntime({ seatRef: SEAT, runtime: "codex", reason: "Plan reset", clearAccountHome: true, dryRun: true }))
+      .toMatchObject({ ok: true, dryRun: true, changed: true, accountHome: null });
+    if (confirms) successorConfirms(svc);
+    const result = await svc.setRuntime({ seatRef: SEAT, runtime: "codex", reason: "Plan reset", clearAccountHome: true, confirmTimeoutMs: 1000 });
+    expect(result.ok).toBe(confirms);
+    const row = db.prepare("SELECT account_home, claude_token_ref FROM nodes WHERE id = ?").get(nodeId) as Record<string, unknown>;
+    expect(row).toEqual({ account_home: confirms ? null : oldHome, claude_token_ref: confirms ? null : oldToken });
+    expect(rigRepo.getEffectiveSeatEnv(nodeId).CODEX_HOME).toBe(confirms ? "/accounts/configured" : oldHome);
+  });
+
+  it("a default-home no-op acknowledges clear without deleting an unrelated legacy token", async () => {
+    const token = JSON.stringify({ label: "legacy", tokenFile: "/tokens/legacy" });
+    db.prepare("UPDATE nodes SET claude_token_ref = ? WHERE id = ?").run(token, nodeId);
+    expect(await service().setRuntime({ seatRef: SEAT, runtime: "codex", reason: "Already default", clearAccountHome: true }))
+      .toMatchObject({ ok: true, changed: false, accountHome: null });
+    expect((db.prepare("SELECT claude_token_ref FROM nodes WHERE id = ?").get(nodeId) as { claude_token_ref: string }).claude_token_ref).toBe(token);
+    expect(fakeTmux.createSession).not.toHaveBeenCalled();
+  });
+
+  it("an ordinary runtime switch without an account override retains legacy launch semantics", async () => {
+    const target = adapter("claude-code");
+    vi.mocked(target.launchHarness).mockImplementation(async binding => {
+      expect(binding.accountHome).toBeUndefined();
+      expect(binding.accountToken).toBeUndefined();
+      return { ok: true };
+    });
+    const svc = service({ runtimeAdapters: { "claude-code": target } }); successorConfirms(svc);
+    expect(await svc.setRuntime({ seatRef: SEAT, runtime: "claude-code", reason: "Ordinary switch" })).toMatchObject({ ok: true });
+  });
+
+  it("a plain runtime switch stages and commits without the previous runtime's stale account home", async () => {
+    db.prepare("UPDATE nodes SET account_home = ?, claude_token_ref = ? WHERE id = ?").run("/accounts/old-codex", JSON.stringify({ label: "old", tokenFile: "/tokens/old" }), nodeId);
+    const target = adapter("claude-code");
+    vi.mocked(target.launchHarness).mockImplementation(async binding => {
+      expect(binding.accountHome).toBeNull();
+      expect(binding.accountToken).toBeNull();
+      return { ok: true };
+    });
+    const svc = service({ runtimeAdapters: { "claude-code": target } }); successorConfirms(svc);
+    expect(await svc.setRuntime({ seatRef: SEAT, runtime: "claude-code", reason: "Change runtime" })).toMatchObject({ ok: true });
+    expect(db.prepare("SELECT account_home, claude_token_ref FROM nodes WHERE id = ?").get(nodeId))
+      .toEqual({ account_home: null, claude_token_ref: null });
+    expect(rigRepo.getEffectiveSeatEnv(nodeId).CLAUDE_CONFIG_DIR).toBeUndefined();
+  });
+
   it.each(["codex", "claude-code"])("the %s successor gets the target home before any configuration commit", async (runtime) => {
     const accountHome = path.join(home, "target-account"); fs.mkdirSync(accountHome);
     const targetAdapter = adapter(runtime);
@@ -195,6 +253,13 @@ describe("live seat runtime switch", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, dryRun: true, from: "codex", to: "codex", accountHome });
     expect(openSwitch()).toBeUndefined();
+    const cleared = await app.request("/api/provider/switch", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seat: SEAT, clearAccountHome: true, reason: "Return to configured login", dryRun: true }) });
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toMatchObject({ ok: true, dryRun: true, accountHome: null });
+    const invalid = await app.request("/api/provider/switch", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seat: SEAT, clearAccountHome: true, toAccount: "ambiguous", reason: "Invalid" }) });
+    expect(invalid.status).toBe(400);
   });
 
   it("a target Claude setup-token reference is staged and committed with its home, replacing any previous token", async () => {
