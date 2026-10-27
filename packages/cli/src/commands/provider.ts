@@ -551,10 +551,10 @@ export function providerCommand(depsOverride?: StatusDeps): Command {
     .option("--force-unsafe", "Kept for scripts; a seat's checks can't be overridden, since each means nothing safe to restart or no such login")
     .option("--clear-account-home", "Return to member/rig/daemon/native login selection through a fresh successor")
     .option("--account-home <path>", "Move to an isolated native account home with a fresh successor and handover; no shared login is changed")
-    .option("--reason <text>", "Required with --account-home")
-    .option("--model <id>", "With --account-home, the successor's model")
-    .option("--codex-config-profile <name>", "With --account-home, the successor's Codex profile")
-    .option("--dry-run", "With --account-home, show the plan without changing anything")
+    .option("--reason <text>", "Required with --account-home or --clear-account-home")
+    .option("--model <id>", "With --account-home or --clear-account-home, the successor's model")
+    .option("--codex-config-profile <name>", "With --account-home or --clear-account-home, the successor's Codex profile")
+    .option("--dry-run", "With --account-home or --clear-account-home, show the plan without changing anything")
     .option("--json", "Output as parseable JSON")
     .addHelpText("after", `
 The daemon plans the seat's in-place restart first (rig seat restart --plan), so a refusal changes nothing. It then saves the
@@ -610,7 +610,8 @@ CLAUDE_CONFIG_DIR and are not isolated by an account home; check them before rel
       }
       if (opts.accountHome !== undefined || opts.clearAccountHome) {
         if (!opts.reason?.trim() || opts.storedLogin) {
-          console.error("With --account-home pass --reason and --to-account, without --stored-login. A Claude subscription may also name --token-file.");
+          console.error(opts.clearAccountHome ? "Pass --reason with --clear-account-home."
+            : "With --account-home pass --reason and --to-account, without --stored-login. A Claude subscription may also name --token-file.");
           process.exitCode = 1;
           return;
         }
@@ -680,7 +681,7 @@ CLAUDE_CONFIG_DIR and are not isolated by an account home; check them before rel
         return;
       }
       if (opts.dryRun || opts.reason || opts.model || opts.codexConfigProfile) {
-        console.error("--reason, --model, --codex-config-profile and --dry-run require --account-home.");
+        console.error("--reason, --model, --codex-config-profile and --dry-run require --account-home or --clear-account-home.");
         process.exitCode = 1;
         return;
       }
