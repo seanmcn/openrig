@@ -56,17 +56,23 @@ describe.skipIf(process.platform === "win32")("a Claude seat's own subscription 
     const root = mkdtempSync(path.join(tmpdir(), "isolated-claude-home-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
     const tokenFile = path.join(root, "old-token");
     writeFileSync(tokenFile, SYNTHETIC, { mode: 0o600 });
-    const f = fixture({ label: "old-account", tokenFile }, { CLAUDE_CODE_OAUTH_TOKEN: "old-fixture", ANTHROPIC_API_KEY: "old-api-fixture" });
+    const f = fixture({ label: "old-account", tokenFile }, {
+      CLAUDE_CODE_OAUTH_TOKEN: "old-fixture", ANTHROPIC_API_KEY: "old-api-fixture", CODEX_ACCESS_TOKEN: "old-access-fixture",
+      OPENAI_FEDERATION_RULE_ID: "old-rule-fixture", OPENAI_IDENTITY_TOKEN_FILE: "/old-identity-file-fixture",
+    });
     const selected = path.join(root, "selected-account"); mkdirSync(selected);
     writeFileSync(path.join(f.root, "bin", "claude"), `#!/bin/sh
 if [ "$1" = --help ]; then printf '%s\\n' '--permission-mode <mode> (choices: "auto", "default")'; exit 0; fi
-printf '%s|%s|%s' "$CLAUDE_CONFIG_DIR" "\${CLAUDE_CODE_OAUTH_TOKEN+set}" "\${ANTHROPIC_API_KEY+set}"
+printf '%s|%s|%s|%s|%s|%s' "$CLAUDE_CONFIG_DIR" "\${CLAUDE_CODE_OAUTH_TOKEN+set}" "\${ANTHROPIC_API_KEY+set}" "\${CODEX_ACCESS_TOKEN+set}" "\${OPENAI_FEDERATION_RULE_ID+set}" "\${OPENAI_IDENTITY_TOKEN_FILE+set}"
 `);
     const command = await f.command(selected);
     expect(command).not.toContain(tokenFile);
     expect(command).not.toContain(SYNTHETIC);
-    const result = await f.run(command, { CLAUDE_CODE_OAUTH_TOKEN: "pane-old-fixture", ANTHROPIC_API_KEY: "pane-old-api-fixture" });
-    expect(result.stdout).toBe(`${selected}||`);
+    const result = await f.run(command, {
+      CLAUDE_CODE_OAUTH_TOKEN: "pane-old-fixture", ANTHROPIC_API_KEY: "pane-old-api-fixture", CODEX_ACCESS_TOKEN: "pane-old-access-fixture",
+      OPENAI_FEDERATION_RULE_ID: "pane-old-rule-fixture", OPENAI_IDENTITY_TOKEN_FILE: "/pane-old-identity-file-fixture",
+    });
+    expect(result.stdout).toBe(`${selected}|||||`);
     expect(f.events).toEqual([]);
   });
 

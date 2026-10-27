@@ -17,7 +17,7 @@ function fixture(shell = "sh", persisted = false) {
   const home = path.join(root, "selected-account"); mkdirSync(home);
   const cli = path.join(bin, "rig"); writeFileSync(cli, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   for (const runtime of ["codex", "claude"]) writeFileSync(path.join(bin, runtime), `#!/bin/sh
-printf '%s|%s|%s|%s|%s' "\${CODEX_HOME-}" "\${CLAUDE_CONFIG_DIR-}" "\${CLAUDE_CODE_OAUTH_TOKEN+set}" "\${ANTHROPIC_API_KEY+set}" "\${OPENAI_API_KEY+set}"
+printf '%s|%s|%s|%s|%s|%s|%s|%s' "\${CODEX_HOME-}" "\${CLAUDE_CONFIG_DIR-}" "\${CLAUDE_CODE_OAUTH_TOKEN+set}" "\${ANTHROPIC_API_KEY+set}" "\${OPENAI_API_KEY+set}" "\${CODEX_ACCESS_TOKEN+set}" "\${OPENAI_FEDERATION_RULE_ID+set}" "\${OPENAI_IDENTITY_TOKEN_FILE+set}"
 `, { mode: 0o700 });
   const identity: Record<string, string> = { OPENRIG_NODE_ID: "node", OPENRIG_SESSION_NAME: "seat@rig" };
   const tmux = { getPaneCommand: async () => shell, getSessionEnv: async (_session: string, key: string) => identity[key] } as unknown as TmuxAdapter;
@@ -32,12 +32,13 @@ describe.skipIf(process.platform === "win32")("an isolated account-home launch",
     const command = await f.launch.command("seat@rig", runtime === "codex" ? "codex --version" : "claude --version", {
       nodeId: "node", runtime, accountHome: f.home, ...(runtime === "codex" ? { codexCwd: f.root } : {}),
     });
-    const env = { ...f.env, CLAUDE_CODE_OAUTH_TOKEN: "synthetic-old-token", ANTHROPIC_API_KEY: "synthetic-old-key", OPENAI_API_KEY: "synthetic-old-openai" };
+    const env = { ...f.env, CLAUDE_CODE_OAUTH_TOKEN: "synthetic-old-token", ANTHROPIC_API_KEY: "synthetic-old-key", OPENAI_API_KEY: "synthetic-old-openai",
+      CODEX_ACCESS_TOKEN: "synthetic-old-access", OPENAI_FEDERATION_RULE_ID: "synthetic-old-rule", OPENAI_IDENTITY_TOKEN_FILE: "/synthetic-old-identity-file" };
     expect(command).not.toContain("synthetic-");
     const { stdout } = await exec("/bin/sh", ["-c", command], { env, timeout: 5000 });
     const observed = stdout.split("|");
     expect(observed[runtime === "codex" ? 0 : 1]).toBe(f.home);
-    expect(observed.slice(2)).toEqual(["", "", ""]);
+    expect(observed.slice(2)).toEqual(["", "", "", "", "", ""]);
     expect(env.OPENAI_API_KEY).toBe("synthetic-old-openai");
   });
 
