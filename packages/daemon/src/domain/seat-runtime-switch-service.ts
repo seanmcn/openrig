@@ -162,6 +162,7 @@ export class SeatRuntimeSwitchService {
     } catch { return null; }
   }
 
+  /** Validate and plan a successor-first runtime/account move, executing it under the seat's lifecycle guard unless dry-run. */
   async setRuntime(input: SetRuntimeInput): Promise<SetRuntimeResult> {
     const refuse = (code: string, message: string, guidance?: string): RuntimeSwitchRefusal => ({ ok: false, code, message, ...(guidance ? { guidance } : {}) });
     if (input.runtime !== "codex" && input.runtime !== "claude-code") {
@@ -313,6 +314,7 @@ export class SeatRuntimeSwitchService {
     return { ok: true, switchId: row.id, message: `Confirmed. OpenRig is moving ${row.canonical_session} to you now. Wait for the activation message before acting as the seat.` };
   }
 
+  /** Stage and confirm the successor before commit; failed preparation retains the predecessor and records cleanup needs. */
   private async execute(ctx: {
     input: SetRuntimeInput & { reason: string }; node: NonNullable<ReturnType<RigRepository["getRig"]>>["nodes"][number]; seatRef: string; sessionName: string;
     predecessorPane: string; predecessorGeneration: string; target: SwitchRuntime; materials: RuntimeSwitchMaterials;
@@ -462,6 +464,7 @@ export class SeatRuntimeSwitchService {
       warnings: finished.ok ? warnings : [...warnings, `The switch committed, but ${finished.message} Finish it with rig seat set-runtime ${ctx.seatRef} --recover.`] };
   }
 
+  /** Atomically move runtime, account references and queue custody to the confirmed successor; pane recovery follows separately. */
   private commit(ctx: {
     input: SetRuntimeInput & { reason: string }; node: NonNullable<ReturnType<RigRepository["getRig"]>>["nodes"][number]; sessionName: string;
     predecessorPane: string; predecessorGeneration: string; target: SwitchRuntime; materials: RuntimeSwitchMaterials;

@@ -180,6 +180,7 @@ export class SeatStatusService {
     return { runtime_home: { variable, home: native, source: "native_default", ...ignored } };
   }
 
+  /** Report a Claude token's stored reference and file availability without reading its value or verifying the login. */
   private claudeTokenStatus(nodeId: string, runtime: string | null): Pick<SeatStatus, "claude_token"> {
     if (runtime !== "claude-code") return {};
     const ref = readClaudeSeatTokenRef(this.rigRepo.db, nodeId);

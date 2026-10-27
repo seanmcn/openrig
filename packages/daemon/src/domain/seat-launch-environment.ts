@@ -102,6 +102,7 @@ export class SeatLaunchEnvironment {
     return bin;
   }
 
+  /** Build an identity-bound child command, scrubbing inherited credentials for a selected account home or refusing its launch. */
   async command(session: string, command: string, target: { codexCwd?: string; nodeId?: string; generation?: string; runtime?: string;
     /** The seat's own CODEX_HOME when it declares one; it wins over the daemon's. */
     codexHome?: string;

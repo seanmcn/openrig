@@ -192,6 +192,7 @@ const LEVEL_WORDS: Record<string, string> = {
   "sends-only": "Deliberate sends from people and agents type; OpenRig's own notices are held.",
 };
 
+/** Show configured seat state, including selected account references, without claiming the running login is verified. */
 function printHuman(status: SeatStatusResponse): void {
   console.log(`Seat ${status.seat_ref}`);
   console.log(`Rig: ${status.rig_name}`);
@@ -373,6 +374,7 @@ function printSeatError(error: SeatStatusError, fallback: string): void {
   }
 }
 
+/** Build seat lifecycle commands, requiring acknowledged plans before isolated account-home changes. */
 export function seatCommand(depsOverride?: SeatDeps & { readStdin?: () => Promise<string>; host?: RunOnHostDeps }): Command {
   const cmd = new Command("seat")
     .description("Inspect OpenRig seat observability state");
@@ -996,7 +998,11 @@ A seat can switch itself (its CLI may end when it retires; the daemon finishes).
       const label = (source: string) => source === "explicit" ? "as given" : source === "agent_spec" ? "from the seat's agent spec" : "the runtime's default";
       const settings = (data["settings"] ?? {}) as Record<string, { value: string | null; source: string }>;
       if (data["dryRun"]) console.log(`Runtime switch plan for ${name}: ${String(data["from"])} -> ${String(data["to"])}. Nothing changes until you run it without --dry-run.`);
+      else if (data["recoveryPending"] === true) console.log(`Recovery is still pending for ${name} (switch ${String(data["switchId"])}); the runtime switch is not complete.`);
       else console.log(`Switched ${name} from ${String(data["from"])} to ${String(data["to"])} (switch ${String(data["switchId"])}).`);
+      if (data["accountHome"]) console.log(`Selected account home: ${String(data["accountHome"])}`);
+      const accountToken = data["accountToken"] as { label: string; tokenFile: string } | undefined;
+      if (accountToken) console.log(`Claude token reference: ${accountToken.label}, read from ${accountToken.tokenFile} at launch`);
       console.log(`Settings on ${String(data["to"])}:`);
       for (const [key, title] of [["model", "model"], ["effort", "effort"], ["advisor", "advisor"], ["codexConfigProfile", "Codex profile"]] as const) {
         const setting = settings[key];
