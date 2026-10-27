@@ -253,6 +253,9 @@ seatRoutes.post("/set-runtime/:seatRef", async (c) => {
   if (body["dryRun"] !== undefined && typeof body["dryRun"] !== "boolean") {
     return c.json({ ok: false, code: "invalid_runtime_settings", message: "dryRun must be true or false." }, 400);
   }
+  if (body["clearAccountHome"] !== undefined && typeof body["clearAccountHome"] !== "boolean") {
+    return c.json({ ok: false, code: "invalid_runtime_settings", message: "clearAccountHome must be true or false." }, 400);
+  }
   const timeout = body["confirmTimeoutSeconds"];
   if (timeout !== undefined && (typeof timeout !== "number" || !Number.isInteger(timeout) || timeout < 10 || timeout > 3600)) {
     return c.json({ ok: false, code: "invalid_runtime_settings", message: "confirmTimeoutSeconds must be a whole number from 10 to 3600." }, 400);
@@ -264,6 +267,7 @@ seatRoutes.post("/set-runtime/:seatRef", async (c) => {
     ...(fields.codexConfigProfile ? { codexConfigProfile: fields.codexConfigProfile } : {}),
     ...(fields.permissionMode ? { permissionMode: fields.permissionMode } : {}),
     ...(fields.accountHome !== undefined ? { accountHome: fields.accountHome! } : {}),
+    ...(body["clearAccountHome"] === true ? { clearAccountHome: true } : {}),
     ...(fields.tokenFile !== undefined ? { accountToken: { label: fields.accountLabel ?? "selected-account", tokenFile: fields.tokenFile! } } : {}),
     ...(typeof timeout === "number" ? { confirmTimeoutMs: timeout * 1000 } : {}),
   });

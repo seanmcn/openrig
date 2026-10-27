@@ -25,7 +25,7 @@ export interface ClaudeLaunchTarget {
   /** A successor may have a reserved generation before its tenure is committed. */
   generation?: string;
   /** The staged successor's isolated account home, before it is committed. */
-  accountHome?: string;
+  accountHome?: string | null;
   accountToken?: ClaudeSeatTokenRef | null;
   /** Slice 16: a Claude successor staged beside the seat's current occupant on another runtime (from #1214 by
    *  Aschenbath). The seat still records that occupant until the switch commits; it must still be bound exactly. */
@@ -162,7 +162,7 @@ export class ClaudeManagedLaunch {
     const cwd = target.cwd!;
     const conflicts: CredentialConflict[] = [];
     if (this.accountHome(nodeId)) conflicts.push({ name: "account-home", source: "the seat's explicit native account-home selection",
-      remedy: "use rig provider switch --account-home to select another isolated account" });
+      remedy: "use rig provider switch --clear-account-home to return to configured defaults, or --account-home to select another isolated account" });
     const instead: CredentialConflict[] = [];
     const names = opts.storedLogin ? [...OUTRANKING_TOKEN_ENV, "CLAUDE_CODE_OAUTH_TOKEN"] : OUTRANKING_TOKEN_ENV;
     const found = (name: string) => name === "CLAUDE_CODE_OAUTH_TOKEN" ? instead : conflicts;
@@ -220,17 +220,17 @@ export class ClaudeManagedLaunch {
   }
 
   /** The config dir a seat's Claude selects: its own home from its member or rig `env:`, else the daemon's. */
-  private selectedConfigDir(nodeId: string | undefined): string | undefined {
-    return effectiveRuntimeHome(this.db, nodeId, "claude-code", this.sessionEnv.CLAUDE_CONFIG_DIR);
+  private selectedConfigDir(nodeId: string | undefined, ignoreAccountHome = false): string | undefined {
+    return effectiveRuntimeHome(this.db, nodeId, "claude-code", this.sessionEnv.CLAUDE_CONFIG_DIR, ignoreAccountHome);
   }
 
   /** Bootstrap and the launched child must use the same native selection.
    * Unset config uses HOME/.claude.json; even an explicit default-looking
    * directory selects <configDir>/.claude.json instead (#154/#225).
    */
-  configPaths(cwd: string, nodeId?: string, accountHome?: string): { configDir: string; statePath: string } {
+  configPaths(cwd: string, nodeId?: string, accountHome?: string | null): { configDir: string; statePath: string } {
     const { HOME } = this.sessionEnv;
-    const CLAUDE_CONFIG_DIR = accountHome ?? this.selectedConfigDir(nodeId);
+    const CLAUDE_CONFIG_DIR = accountHome ?? this.selectedConfigDir(nodeId, accountHome === null);
     if (!HOME || !path.isAbsolute(HOME)) throw new Error("Claude managed launch context is unresolved: absolute HOME is required.");
     const configDir = path.resolve(cwd, CLAUDE_CONFIG_DIR ?? path.join(HOME, ".claude"));
     return { configDir, statePath: path.join(CLAUDE_CONFIG_DIR === undefined ? HOME : configDir, ".claude.json") };
@@ -238,13 +238,13 @@ export class ClaudeManagedLaunch {
 
   /** The state file under the seat's own or the daemon's non-empty CLAUDE_CONFIG_DIR, or undefined when neither
    * selects one. Classic bootstrap provisions it in addition to HOME/.claude.json. */
-  selectedStatePath(cwd: string, nodeId?: string, accountHome?: string): string | undefined {
-    return accountHome || this.selectedConfigDir(nodeId) ? this.configPaths(cwd, nodeId, accountHome).statePath : undefined;
+  selectedStatePath(cwd: string, nodeId?: string, accountHome?: string | null): string | undefined {
+    return (accountHome ?? this.selectedConfigDir(nodeId, accountHome === null)) ? this.configPaths(cwd, nodeId, accountHome).statePath : undefined;
   }
 
-  private context(cwd: string, nodeId: string, accountHome?: string) {
+  private context(cwd: string, nodeId: string, accountHome?: string | null) {
     const { PATH, HOME } = this.sessionEnv;
-    const CLAUDE_CONFIG_DIR = accountHome ?? this.selectedConfigDir(nodeId);
+    const CLAUDE_CONFIG_DIR = accountHome ?? this.selectedConfigDir(nodeId, accountHome === null);
     if (!PATH || !HOME || !path.isAbsolute(HOME)) throw new Error("Claude managed launch context is unresolved: managed PATH and absolute HOME are required.");
     // Relative/empty PATH entries are interpreted at the intended seat cwd,
     // including for /usr/bin/env shebangs inside the selected executable.
@@ -284,7 +284,7 @@ export class ClaudeManagedLaunch {
       throw new Error("Claude managed launch context is unresolved: a bound pane and current occupant are required.");
     }
     // A staged switch successor: the seat's current occupant is still bound exactly, and the successor is elsewhere.
-    const staged = !!switching && (switching.fromRuntime !== "claude-code" || !!target.accountHome) && switching.session === before.session
+    const staged = !!switching && (switching.fromRuntime !== "claude-code" || target.accountHome !== undefined) && switching.session === before.session
       && switching.pane === before.pane && switching.generation === before.generation
       && !!target.session && target.session !== before.session && !!target.pane && target.pane !== before.pane
       && !!target.generation && target.generation !== before.generation;
@@ -293,7 +293,7 @@ export class ClaudeManagedLaunch {
       || (!staged && target.pane != null && target.pane !== before.pane)) {
       throw new Error("Claude managed launch target disagrees with the current binding; no input or selection changed.");
     }
-    const accountHome = target.accountHome ?? seatAccountHome(this.db, target.nodeId, "claude-code");
+    const accountHome = target.accountHome !== undefined ? target.accountHome : seatAccountHome(this.db, target.nodeId, "claude-code");
     if (accountHome) this.assertAccountHome(target.nodeId, accountHome, target.accountHome ? target.accountToken ?? null : undefined);
     const credentialKeys: readonly string[] = accountHome ? ACCOUNT_HOME_PROVIDER_ENV : [];
     const context = this.context(cwd, target.nodeId, accountHome);
@@ -360,7 +360,7 @@ export class ClaudeManagedLaunch {
     // file can't be read, Claude still starts, and a token the reduction would have removed is removed by the step instead.
     const tokenKept = selectedKeys.includes("CLAUDE_CODE_OAUTH_TOKEN");
     const token = this.seatTokenLaunch(target.nodeId, { removeOnFailure: !tokenKept,
-      ...(target.accountHome ? { ref: target.accountToken ?? null, required: true } : {}) });
+      ...(target.accountHome !== undefined ? { ref: target.accountHome === null ? target.accountToken : target.accountToken ?? null, required: !!target.accountHome } : {}) });
     const tokenStep = token ? `${token.step} && ` : "";
     const warnings = token?.warnings ?? Object.freeze([]);
     return Object.freeze({ assertCurrent, warnings, configDir: context.configDir, executable: context.executable, executableIsScript: context.executableIsScript, command: (args: readonly string[], launchEnv: Readonly<Record<string, string>> = {}) => {

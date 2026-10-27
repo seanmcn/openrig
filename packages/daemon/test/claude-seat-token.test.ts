@@ -59,12 +59,12 @@ describe.skipIf(process.platform === "win32")("a Claude seat's own subscription 
     const f = fixture({ label: "old-account", tokenFile }, {
       CLAUDE_CODE_OAUTH_TOKEN: "old-fixture", ANTHROPIC_API_KEY: "old-api-fixture", CODEX_ACCESS_TOKEN: "old-access-fixture",
       OPENAI_FEDERATION_RULE_ID: "old-rule-fixture", OPENAI_IDENTITY_TOKEN_FILE: "/old-identity-file-fixture",
-      OPENAI_PROJECT_ID: "old-project-fixture", AWS_BEARER_TOKEN_BEDROCK: "old-bedrock-fixture",
+      OPENAI_PROJECT_ID: "old-project-fixture", AWS_BEARER_TOKEN_BEDROCK: "old-bedrock-fixture", ANTHROPIC_PROFILE: "synthetic-profile", ANTHROPIC_FEDERATION_RULE_ID: "synthetic-rule", ANTHROPIC_ORGANIZATION_ID: "synthetic-org",
     });
     const selected = path.join(root, "selected-account"); mkdirSync(selected);
     writeFileSync(path.join(f.root, "bin", "claude"), `#!/bin/sh
 if [ "$1" = --help ]; then printf '%s\\n' '--permission-mode <mode> (choices: "auto", "default")'; exit 0; fi
-printf '%s|%s|%s|%s|%s|%s|%s|%s' "$CLAUDE_CONFIG_DIR" "\${CLAUDE_CODE_OAUTH_TOKEN+set}" "\${ANTHROPIC_API_KEY+set}" "\${CODEX_ACCESS_TOKEN+set}" "\${OPENAI_FEDERATION_RULE_ID+set}" "\${OPENAI_IDENTITY_TOKEN_FILE+set}" "\${OPENAI_PROJECT_ID+set}" "\${AWS_BEARER_TOKEN_BEDROCK+set}"
+printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' "$CLAUDE_CONFIG_DIR" "\${CLAUDE_CODE_OAUTH_TOKEN+set}" "\${ANTHROPIC_API_KEY+set}" "\${CODEX_ACCESS_TOKEN+set}" "\${OPENAI_FEDERATION_RULE_ID+set}" "\${OPENAI_IDENTITY_TOKEN_FILE+set}" "\${OPENAI_PROJECT_ID+set}" "\${AWS_BEARER_TOKEN_BEDROCK+set}" "\${ANTHROPIC_PROFILE+set}" "\${ANTHROPIC_FEDERATION_RULE_ID+set}" "\${ANTHROPIC_ORGANIZATION_ID+set}"
 `);
     const command = await f.command(selected);
     expect(command).not.toContain(tokenFile);
@@ -72,10 +72,27 @@ printf '%s|%s|%s|%s|%s|%s|%s|%s' "$CLAUDE_CONFIG_DIR" "\${CLAUDE_CODE_OAUTH_TOKE
     const result = await f.run(command, {
       CLAUDE_CODE_OAUTH_TOKEN: "pane-old-fixture", ANTHROPIC_API_KEY: "pane-old-api-fixture", CODEX_ACCESS_TOKEN: "pane-old-access-fixture",
       OPENAI_FEDERATION_RULE_ID: "pane-old-rule-fixture", OPENAI_IDENTITY_TOKEN_FILE: "/pane-old-identity-file-fixture",
-      OPENAI_PROJECT_ID: "pane-old-project-fixture", AWS_BEARER_TOKEN_BEDROCK: "pane-old-bedrock-fixture",
+      OPENAI_PROJECT_ID: "pane-old-project-fixture", AWS_BEARER_TOKEN_BEDROCK: "pane-old-bedrock-fixture", ANTHROPIC_PROFILE: "pane-profile", ANTHROPIC_FEDERATION_RULE_ID: "pane-rule", ANTHROPIC_ORGANIZATION_ID: "pane-org",
     });
-    expect(result.stdout).toBe(`${selected}|||||||`);
+    expect(result.stdout).toBe(`${selected}||||||||||`);
     expect(f.events).toEqual([]);
+  });
+
+  it.each([undefined, "/accounts/member", "/accounts/daemon"])("a staged managed clear uses configured home %s and removes only the old account token", async baseline => {
+    const f = fixture({ label: "old", tokenFile: "/absent/old-token" }, baseline === "/accounts/daemon" ? { CLAUDE_CONFIG_DIR: baseline } : {});
+    f.db.exec("ALTER TABLE nodes ADD COLUMN account_home TEXT");
+    f.db.prepare("UPDATE nodes SET account_home = ?, env_json = ? WHERE id = 'node'")
+      .run(path.join(f.root, "old-account"), baseline === "/accounts/member" ? JSON.stringify({ CLAUDE_CONFIG_DIR: baseline }) : null);
+    writeFileSync(path.join(f.root, "bin", "claude"), `#!/bin/sh
+if [ "$1" = --help ]; then printf '%s\\n' '--permission-mode <mode> (choices: "auto", "default")'; exit 0; fi
+printf '%s|%s' "\${CLAUDE_CONFIG_DIR-}" "\${CLAUDE_CODE_OAUTH_TOKEN+set}"
+`);
+    const managed = await f.managed.prepare({ nodeId: "node", session: "staging", pane: "%2", generation: "next-gen", accountHome: null, accountToken: null,
+      runtimeSwitch: { fromRuntime: "claude-code", session: "seat@rig", pane: "%1", generation: "gen" } }, "auto");
+    expect(managed.configDir).toBe(baseline ?? path.join(f.root, "home", ".claude"));
+    expect(f.managed.configPaths(path.join(f.root, "work"), "node", null).statePath).toBe(baseline ? path.join(baseline, ".claude.json") : path.join(f.root, "home", ".claude.json"));
+    const result = await f.run(managed.command([]), { CLAUDE_CONFIG_DIR: "/accounts/old", CLAUDE_CODE_OAUTH_TOKEN: "synthetic-old" });
+    expect(result.stdout).toBe(`${baseline ?? ""}|`);
   });
 
   it("an account-home plan uses its explicit setup-token file and fails closed if that file disappears", async () => {

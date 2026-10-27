@@ -549,6 +549,7 @@ export function providerCommand(depsOverride?: StatusDeps): Command {
     .option("--token-file <path>", "Claude: the absolute path of a 0600 file holding the seat's own subscription token; it's read only as Claude starts")
     .option("--stored-login", "Claude: move the seat back to its config dir's stored login")
     .option("--force-unsafe", "Kept for scripts; a seat's checks can't be overridden, since each means nothing safe to restart or no such login")
+    .option("--clear-account-home", "Return to member/rig/daemon/native login selection through a fresh successor")
     .option("--account-home <path>", "Move to an isolated native account home with a fresh successor and handover; no shared login is changed")
     .option("--reason <text>", "Required with --account-home")
     .option("--model <id>", "With --account-home, the successor's model")
@@ -585,9 +586,18 @@ save it. That environment is Claude's, so the tools, hooks and MCP servers it st
 environment writes it into the transcript. A token-authenticated seat can make model requests but can't use claude.ai
 connectors or Remote Control; its local MCP servers still work. --stored-login moves it back to the config dir's stored login;
 a CLAUDE_CODE_OAUTH_TOKEN the seat still receives outranks that login, and the report says which token it will use. Claude's
-/status shows token auth with no account email, so the label is yours, not an observed account.`)
-    .action(async (opts: AccountOpts & { seat: string; forceUnsafe?: boolean; json?: boolean; accountHome?: string; reason?: string; model?: string; codexConfigProfile?: string; dryRun?: boolean }) => {
-      const target = targetAccount(opts);
+/status shows token auth with no account email, so the label is yours, not an observed account.
+
+--clear-account-home returns to the configured member/rig/daemon/native home through a fresh successor with a handover.
+Use it without --to-account, --stored-login, --account-home or --token-file. It removes an account-home token reference
+only after confirmation; it does not restore historical login bytes. Anthropic active/default profiles live outside
+CLAUDE_CONFIG_DIR and are not isolated by an account home; check them before relying on a stored login.`)
+    .action(async (opts: AccountOpts & { seat: string; forceUnsafe?: boolean; json?: boolean; accountHome?: string; clearAccountHome?: boolean; reason?: string; model?: string; codexConfigProfile?: string; dryRun?: boolean }) => {
+      if (opts.clearAccountHome && (opts.accountHome !== undefined || opts.tokenFile !== undefined || opts.toAccount !== undefined || opts.storedLogin)) {
+        console.error("Use --clear-account-home alone, without --account-home, --token-file, --to-account or --stored-login.");
+        process.exitCode = 1; return;
+      }
+      const target = opts.clearAccountHome ? { toAccount: "default" } : targetAccount(opts);
       if (!target) {
         console.error("Name the account: --to-account <name> (with --token-file <path> for a Claude seat), or --stored-login for a Claude seat.");
         process.exitCode = 1;
@@ -598,7 +608,7 @@ a CLAUDE_CODE_OAUTH_TOKEN the seat still receives outranks that login, and the r
         process.exitCode = 1;
         return;
       }
-      if (opts.accountHome !== undefined) {
+      if (opts.accountHome !== undefined || opts.clearAccountHome) {
         if (!opts.reason?.trim() || opts.storedLogin) {
           console.error("With --account-home pass --reason and --to-account, without --stored-login. A Claude subscription may also name --token-file.");
           process.exitCode = 1;
@@ -614,7 +624,7 @@ a CLAUDE_CODE_OAUTH_TOKEN the seat still receives outranks that login, and the r
             process.exitCode = 1; return;
           }
           preview = await client.post<Record<string, unknown>>(`/api/seat/set-runtime/${encodeURIComponent(opts.seat)}`, {
-            runtime, accountHome: opts.accountHome, reason: opts.reason, dryRun: true,
+            runtime, ...(opts.clearAccountHome ? { clearAccountHome: true } : { accountHome: opts.accountHome }), reason: opts.reason, dryRun: true,
             ...(opts.model !== undefined ? { model: opts.model } : {}),
             ...(opts.codexConfigProfile !== undefined ? { codexConfigProfile: opts.codexConfigProfile } : {}),
             ...(opts.tokenFile !== undefined ? { tokenFile: opts.tokenFile, accountLabel: opts.toAccount } : {}),
@@ -625,7 +635,7 @@ a CLAUDE_CODE_OAUTH_TOKEN the seat still receives outranks that login, and the r
           process.exitCode = 1; return;
         }
         const token = opts.tokenFile ? { label: opts.toAccount!, tokenFile: opts.tokenFile } : undefined;
-        if (!accountHomePlanMatches(preview.data, opts.accountHome, token)) {
+        if (!accountHomePlanMatches(preview.data, opts.clearAccountHome ? null : opts.accountHome!, token)) {
           const refusal = { ok: false, code: "account_home_switch_unavailable", message: preview.data["message"]
             ?? "The daemon did not acknowledge the selected account home and token. No switch was requested." };
           if (opts.json) console.log(JSON.stringify(refusal)); else console.error(refusal.message);
@@ -634,7 +644,7 @@ a CLAUDE_CODE_OAUTH_TOKEN the seat still receives outranks that login, and the r
         if (opts.dryRun) {
           if (opts.json) console.log(JSON.stringify(preview.data));
           else {
-            console.log(`Account-home plan for ${opts.seat}: ${opts.accountHome}. Nothing changed.`);
+            console.log(`Account-home plan for ${opts.seat}: ${opts.accountHome ?? "configured defaults"}. Nothing changed.`);
             const settings = (preview.data["settings"] ?? {}) as Record<string, { value: string | null; source: string }>;
             console.log(`Settings on ${String(preview.data["to"])}:`);
             for (const [name, setting] of Object.entries(settings)) console.log(`  ${name}: ${setting.value ?? "none"} (${setting.source})`);
@@ -650,7 +660,7 @@ a CLAUDE_CODE_OAUTH_TOKEN the seat still receives outranks that login, and the r
         let result;
         try {
           result = await client.post<Record<string, unknown>>("/api/provider/switch", {
-            seat: opts.seat, ...target, accountHome: opts.accountHome, reason: opts.reason, dryRun: false,
+            seat: opts.seat, ...(opts.clearAccountHome ? { clearAccountHome: true } : { ...target, accountHome: opts.accountHome }), reason: opts.reason, dryRun: false,
             ...(opts.model !== undefined ? { model: opts.model } : {}),
             ...(opts.codexConfigProfile !== undefined ? { codexConfigProfile: opts.codexConfigProfile } : {}),
           }, { timeoutMs: 300_000 });
@@ -664,7 +674,7 @@ a CLAUDE_CODE_OAUTH_TOKEN the seat still receives outranks that login, and the r
           console.error(`Recovery is still pending for ${opts.seat}; the account-home switch is not complete.`);
           for (const warning of (result.data["warnings"] as string[] | undefined) ?? []) console.error(`Warning: ${warning}`);
         }
-        else if (result.data["ok"] === true) console.log(`Account-home switch for ${opts.seat}: ${opts.accountHome}. A fresh conversation carries the handover; the account is not verified until a real tool turn.`);
+        else if (result.data["ok"] === true) console.log(`Account-home switch for ${opts.seat}: ${opts.accountHome ?? "configured defaults"}. A fresh conversation carries the handover; the account is not verified until a real tool turn.`);
         else console.error(result.data["message"] ?? "The account-home switch did not complete.");
         process.exitCode = result.status >= 400 || result.data["ok"] !== true || result.data["recoveryPending"] === true ? 1 : 0;
         return;
