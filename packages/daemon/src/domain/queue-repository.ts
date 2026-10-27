@@ -133,7 +133,7 @@ export function presentedNudgeResult(wireResult: string | null, claimedAt: strin
 }
 
 /**
- * 0.5.1-54 DR-1 (classifier fold, PM ruling qitem-20260811163927-74493d76) — classify a create-path
+ * 0.5.1-54 DR-1 (classifier fold, PM ruling) — classify a create-path
  * nudge FAILURE so the surfaced count becomes ACTIONABLE (constraint iii). Two classes:
  *   - "permanent-topology": the destination is not resolvable on THIS daemon (the nudge can never
  *     succeed here — a local-registry lookup reporting "not found" for a seat that lives on another
@@ -142,7 +142,7 @@ export function presentedNudgeResult(wireResult: string | null, claimedAt: strin
  *   - "transient": a live, resolvable seat that refused THIS attempt (busy at an interactive prompt) or
  *     the attempt timed out — the only class a future bounded re-attempt (DR-2, held n=1) would touch.
  *   - "unknown": a failure whose text matches NEITHER known pattern. NOT silently defaulted to transient
- *     (ship-block ruling qitem-20260811170941-5eadb968): defaulting would assert "a live seat refused
+ *     (ship-block ruling): defaulting would assert "a live seat refused
  *     this attempt" for a string that only means "did not match the permanent pattern" — two different
  *     claims. An unknown must read as unknown (the same rule the ACTIVITY hookless=unknown ruling names);
  *     a default that collapses unknown into a known class is the exact sin, mirrored.
@@ -1022,7 +1022,7 @@ export class QueueRepository {
     // check BEFORE LIMIT. LIKE / GLOB patterns are supersets that
     // would let malformed rows (e.g., 'human-@kernel' — empty name
     // segment) occupy the LIMIT window and hide valid attention items
-    // behind them (guard re-verify-3 qitem-20260518193005 BLOCKER 1).
+    // behind them (guard re-verify-3 BLOCKER 1).
     // better-sqlite3 db.function is idempotent; safe to call once at
     // construction.
     // OPR.0.4.4.19: single-source regex — the SQL function delegates to the
@@ -1677,7 +1677,7 @@ export class QueueRepository {
     trigger: WakeTrigger = "agent",
     recheckMembers?: import("./session-transport.js").SendOpts["recheckMembers"],
   ): Promise<WakeAttemptOutcome> {
-    // DEFECT FIX qitem-20260827065907-b9ae334c (S1-class, 3 live specimens): a virtual
+    // DEFECT FIX (S1-class, 3 live specimens): a virtual
     // @external destination has NO pane — the queue row ITSELF is the gateway
     // subsystem's input (the Slack connector polls human-destined rows and its own
     // ledger is the delivery record). Falling through to tmux here recorded
@@ -4031,7 +4031,7 @@ export class QueueRepository {
    * applies AFTER attention filtering. This makes the result
    * window-INDEPENDENT by construction: an old human-gate item
    * cannot be evicted past LIMIT by routine open qitems even when
-   * there are >>LIMIT of them. (Guard verdict qitem-20260518190827
+   * there are >>LIMIT of them. (Guard verdict
    * BLOCKER 1 — the prior fetch-then-filter approach in the route
    * could still hide attention items behind ATTENTION_FETCH_BOUND
    * newer routine open qitems.)
@@ -4101,10 +4101,10 @@ export class QueueRepository {
     // optional scope filters (mirrors list() composition so
     // `attention=1` query params remain composable with
     // destinationSession/sourceSession/targetRepo — guard re-verify
-    // qitem-20260518192210 BLOCKER 1).
+    // BLOCKER 1).
     const statePlaceholders = states.map(() => "?").join(", ");
     // The attention predicate is EXACT in SQL (guard re-verify-3
-    // qitem-20260518193005 BLOCKER 1): is_human_seat_session evaluates
+    // BLOCKER 1): is_human_seat_session evaluates
     // the strict regex registered in the QueueRepository constructor.
     // Malformed rows that would have slipped through a LIKE superset
     // (e.g., 'human-@kernel' — empty name segment) are rejected at
@@ -4822,7 +4822,7 @@ export class QueueRepository {
 
   /** listed: the row's owner notifications and ledger, when a listing read them for all its rows. */
   waitingView(qitemId: string, listed?: ListedLedger): WaitingView | null {
-    const view = readWaitingView(this.db, qitemId, this.activityReader);
+    const view = readWaitingView(this.db, qitemId, this.activityReader, target => this.acceptsDestination(target));
     if (view && ["pending", "in-progress"].includes(view.state)) {
       // #514 — the unclaimed sweep skips a pending ask already posted to its human in the current
       // episode (same predicate as runStuckSweep), so the view must not promise that sweep.
@@ -4840,7 +4840,7 @@ export class QueueRepository {
         view.nextBackstop = quiet;
         return view;
       }
-      const recovery = readWakeLadderBackstop(this.db, qitemId);
+      const recovery = readWakeLadderBackstop(this.db, qitemId, target => this.acceptsDestination(target));
       if (recovery) {
         if (!awaitingHuman) view.laterBackstop = { ...view.nextBackstop, note: "Conditional safety net; current delivery/recovery ownership is evaluated first." };
         view.nextBackstop = recovery;

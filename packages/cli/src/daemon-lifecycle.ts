@@ -356,7 +356,7 @@ export function resolveCliBaseDir(baseDir: string): string {
  * stale daemon through `rig daemon start` whenever they've rebuilt
  * `@openrig/daemon` but haven't rerun `build-package.sh`. That hid the
  * fact that QA on local main 55e01f2e was getting a daemon WITHOUT the
- * shipped slice-09 `/api/rig-mode/*` routes (qitem-20260518054224).
+ * shipped slice-09 `/api/rig-mode/*` routes.
  *
  * In an npm-install layout `packages/daemon/dist` does not exist
  * (only the bundled `packages/cli/daemon` lives next to the cli);
@@ -450,7 +450,7 @@ const ENV_SCRUB_PREFIXES = ["CODEX_", "GHOSTTY_", "XPC_", "__CF"];
 // OPENRIG_BIND_HOST (exported below when opts.host declares it). THE RULE FOR FUTURE
 // PASSTHROUGH EDITS: any env var that doubles as client routing state must join this
 // set — routing state silently becoming bind policy is the incident class
-// (operator baton qitem-20260827070400: parent lost its Tailscale listener).
+// (an incident where a host lost its Tailscale listener).
 const ROUTING_ENV_SCRUB = new Set(["OPENRIG_HOST", "RIGGED_HOST"]);
 
 const ENV_SCRUB_EXACT = new Set([
@@ -1316,6 +1316,18 @@ export interface KernelReadyResult {
   /** The daemon is restoring an existing kernel a reboot left down, not booting a first one:
    *  whether that restore is still running or has returned. */
   existingRestore?: "in_progress" | "finished";
+}
+
+/** What to tell a person when daemon start skipped the kernel on purpose (kernel_state `skipped`).
+ *  The daemon also skips when a kernel rig already exists (kernel-boot.ts); that rig need not be running.
+ *  A longer detail with the same start is the daemon's own reason, such as a kernel already down before it started. */
+export function skippedKernelMessage(detail: string | null): string {
+  const d = detail ?? "";
+  return d === "kernel rig already managed"
+    ? "Kernel auto-boot skipped (kernel rig already managed). If its seats are not running, for example after a reboot, bring it back with: rig up kernel --existing"
+    : d.startsWith("kernel rig already managed")
+      ? `Kernel auto-boot skipped: ${d}`
+      : "Kernel auto-boot skipped (--no-kernel or test mode), including the operator that helps you start a team. To start it later, run rig, set up or select kernel, then start its operator seat.";
 }
 
 export async function waitForKernelReady(

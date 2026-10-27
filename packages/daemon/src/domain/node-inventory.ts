@@ -769,8 +769,9 @@ function buildInventoryEntry(
     ...(communityHarnessOf(row.session_community_harness, row.runtime) ? { communityHarness: communityHarnessLabel(row.runtime!, undefined, { resumeType: row.resume_type, resumeToken: row.resume_token, resumeProvenance: row.resume_provenance ?? null }) } : {}),
     sessionStatus,
     storedSessionStatus: row.session_status,
+    // An explicit down records a failed start's rolled-back session without changing its superseded status.
     intentionallyStopped: row.intentionally_stopped === 1
-      && row.session_status === "exited" && row.binding_id === null,
+      && (row.session_status === "exited" || row.session_status === "superseded") && row.binding_id === null,
     // Match the graph's current-status projection without rewriting the startup
     // result. Applicable mismatch (including ambiguity) or pane_missing overrides it.
     storedStartupStatus: row.startup_status as NodeInventoryEntry["startupStatus"],
@@ -1303,7 +1304,7 @@ export function attachTerminalActivityAndWork(
 }
 
 /**
- * QA baseline-deep-dogfood BLOCKING-A2 (qitem-20260518063900-85745917):
+ * QA baseline-deep-dogfood BLOCKING-A2:
  * adopted/live-session rigs do NOT surface assigned queue work because
  * the prior lookup matched destination_session ONLY against
  * canonicalSessionName.

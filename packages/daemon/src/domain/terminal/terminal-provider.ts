@@ -1,3 +1,5 @@
+import type { ViewerKey, ViewerResult } from "./herdr-viewer.js";
+import type { TaskMembership } from "./task-terminal-view.js";
 // OPR.0.4.6.02 C2 — the TerminalProvider abstraction (the CORE seam of the
 // terminal-provider ride).
 //
@@ -48,6 +50,8 @@ export interface AbsentSeat {
 /** A seat that is honestly degraded (e.g. an http-registered host that tiles cannot reach over ssh). */
 export interface DegradedSeat {
   seat: string;
+  /** The provider accepted the layout but could not confirm this seat's pane. */
+  code?: "pane_unconfirmed";
   /** Structured host id (degrade is always host-driven). */
   host: string;
   reason: string;
@@ -58,8 +62,12 @@ export interface DegradedSeat {
  * `opened` is the flat tiled set; `pages` is that same set chunked into
  * fixed-size grids (one provider tab/workspace per page).
  */
+export interface ViewDescriptor { kind: "following" | "fixed"; name: string }
+
 export interface ComposedView {
   id: string;
+  task?: TaskMembership;
+  viewDescriptor?: ViewDescriptor;
   /** Service-provided preview fingerprint, attached after composition for provider labels. */
   planId?: string;
   opened: ComposedPane[];
@@ -101,6 +109,8 @@ export interface ProviderLiveness {
  */
 export interface OpenViewResult {
   provider: string;
+  task?: TaskMembership;
+  viewDescriptor?: ViewDescriptor;
   /** Explicitly selected provider session, when the request names one. */
   session?: string;
   ok: boolean;
@@ -133,4 +143,6 @@ export interface TerminalProvider {
   status(): Promise<ProviderStatus>;
   liveness(): Promise<ProviderLiveness>;
   openView(view: ComposedView): Promise<OpenViewResult>;
+  ensureViewer?(key: ViewerKey, pane: ComposedPane, stillCurrent?: () => Promise<boolean>): Promise<ViewerResult>;
+  lookupViewer?(key: ViewerKey, pane: ComposedPane): Promise<ViewerResult>;
 }

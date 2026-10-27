@@ -7,9 +7,9 @@
 // seat, and so is every request once the file is gone or malformed, until a restart. Each request gets its own
 // DaemonClient, carrying its grant's seat, so concurrent callers never share an identity.
 //
-// With --cloud-grants, grants come from OpenRig Cloud instead and the token file is never read: each request's key is
-// checked with Cloud (openrig.cloud.grant/v1) for this daemon's instance, every answer but active is refused, and a
-// customer reaches only what its grant names (customerScope in mcp-server.ts).
+// With --grant-service, grants come from an external grant service instead and the token file is never read: each
+// request's key is checked with that service (openrig.grant/v1) for this daemon's instance, every answer but active is
+// refused, and an external caller reaches only what its grant names (externalScope in mcp-server.ts).
 //
 // The endpoint serves both protocol revisions: 2026-07-28 per request, and 2025's initialize and exchanges statelessly.
 import http from "node:http";
@@ -148,19 +148,20 @@ export function isLoopbackHost(host: string): boolean {
 export class McpHttpConfigError extends Error {}
 
 /** The caller whose grant this server checked, as the daemon records it beside the rows it writes (principal:v1). */
-export type McpPrincipal = { source: "file" | "cloud"; id: string; grant?: string; version?: number | string };
+export type McpPrincipal = { source: "file" | "grant-service"; id: string; grant?: string; version?: number | string };
 /** One request's caller as this server decided it: no seat, access or principal for the loopback local owner. */
 type RequestCaller = { seat?: string; access?: McpAccess; principal?: McpPrincipal };
 
-/** OpenRig Cloud's customer grant contract. Core asks on every request with the customer's raw key and its own instance
- *  id; nothing is cached, and every answer but `active` is refused. */
-export const CLOUD_GRANT_SCHEMA = "openrig.cloud.grant/v1";
-/** A customer key, `<connection id>.<customer id>.<secret>`. Anything else is refused before any call. */
-const CLOUD_KEY = /^[a-f0-9]{24}\.cus_[A-Za-z0-9]{8,64}\.[a-f0-9]{48}$/;
-/** An instance id as Cloud takes it. */
-const CLOUD_INSTANCE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** An external grant service's contract. Core asks on every request with the caller's raw key and its own instance id;
+ *  nothing is cached, and every answer but `active` is refused. */
+export const GRANT_SCHEMA = "openrig.grant/v1";
+/** A grant key as the grant service issues it, `<connection id>.cus_<principal id>.<secret>`. Anything else is refused
+ *  before any call. */
+const GRANT_KEY = /^[a-f0-9]{24}\.cus_[A-Za-z0-9]{8,64}\.[a-f0-9]{48}$/;
+/** An instance id as the grant service takes it. */
+const INSTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-export type CloudGrantOptions = {
+export type GrantServiceOptions = {
   /** The grant endpoint. It must be https, except on loopback. */
   url: string;
   /** One header sent with every grant request and nowhere else, such as a protected deployment's bypass. */
@@ -169,7 +170,7 @@ export type CloudGrantOptions = {
 };
 
 /** Reads a `Name: value` header line from a secret file. */
-export function readCloudGrantHeader(file: string): { name: string; value: string } {
+export function readGrantServiceHeader(file: string): { name: string; value: string } {
   const line = fs.readFileSync(file, "utf8").trim();
   const match = /^([A-Za-z0-9-]+):[ \t]*(\S(?:.*\S)?)$/.exec(line);
   if (!match || line.includes("\n")) throw new McpHttpConfigError(`${file} must hold one line, Name: value`);
@@ -180,13 +181,43 @@ export function readCloudGrantHeader(file: string): { name: string; value: strin
   return { name: match[1]!, value: match[2]! };
 }
 
-function cloudGrantUrl(url: string): URL {
+function grantServiceUrl(url: string): URL {
   let parsed: URL;
-  try { parsed = new URL(url); } catch { throw new McpHttpConfigError(`--cloud-grants takes the grant endpoint's URL, not ${url}`); }
+  try { parsed = new URL(url); } catch { throw new McpHttpConfigError(`--grant-service takes the grant endpoint's URL, not ${url}`); }
   if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLoopbackHost(parsed.hostname))) {
     throw new McpHttpConfigError(`The grant endpoint must be https: ${url}`);
   }
   return parsed;
+}
+
+/** OAuth discovery (RFC 9728) for a server whose keys a grant service checks: the one metadata document, where it's
+ *  served, and the 401 challenge that points at it. */
+type OAuthDiscovery = { path: string; document: Record<string, unknown>; challenge: string };
+
+/** The resource clients reach this server as and the authorization server that issues its keys, served exactly as
+ *  configured. Each must be https with no userinfo, query or fragment, written as a URL writes it (a lowercase host, no
+ *  default port), so nothing is normalized on the way out; the resource's path ends in /mcp. Its metadata is at the
+ *  path-inserted address, and nowhere else. */
+function oauthDiscovery(oauth: { resource: string; issuer: string }): OAuthDiscovery {
+  const exact = (flag: string, value: string): URL => {
+    let url: URL | undefined;
+    try { url = new URL(value); } catch { /* refused below */ }
+    // A bare origin is written without the slash a URL adds. An empty query or fragment shows only in the text.
+    const written = url !== undefined && (url.href === value || (url.pathname === "/" && url.href === `${value}/`));
+    if (!url || !written || url.protocol !== "https:" || url.username || url.password || /[?#]/.test(value)) {
+      throw new McpHttpConfigError(`${flag} takes an https URL with no userinfo, query or fragment, written as a URL writes it (a lowercase host, no default port), not ${value}`);
+    }
+    return url;
+  };
+  const resource = exact("--oauth-resource", oauth.resource);
+  exact("--oauth-issuer", oauth.issuer);
+  if (!resource.pathname.endsWith("/mcp")) throw new McpHttpConfigError(`--oauth-resource's path must end in /mcp, not ${oauth.resource}`);
+  const path = `/.well-known/oauth-protected-resource${resource.pathname}`;
+  return {
+    path,
+    document: { resource: oauth.resource, authorization_servers: [oauth.issuer], scopes_supported: ["openrig.work"], bearer_methods_supported: ["header"] },
+    challenge: `Bearer realm="openrig", resource_metadata="${resource.origin}${path}"`,
+  };
 }
 
 type Refusal = { status: number; error: string; message: string; log?: string };
@@ -198,24 +229,25 @@ const unavailable = (log: string): Refusal => ({
 
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string" && item !== "");
 
-/** One request's caller from Cloud's answer for its key. A refusal never falls back to the token file or the env's seat. */
-async function cloudCaller(cloud: CloudGrantOptions, url: URL, key: string, instance: string): Promise<{ seat: string; access: McpAccess; principal: McpPrincipal } | Refusal> {
+/** One request's caller from the grant service's answer for its key. A refusal never falls back to the token file or
+ *  the env's seat. */
+async function grantServiceCaller(service: GrantServiceOptions, url: URL, key: string, instance: string): Promise<{ seat: string; access: McpAccess; principal: McpPrincipal } | Refusal> {
   let res: Response;
   try {
     res = await fetch(url, {
       method: "POST",
       // A redirect would carry the key and the header to another origin.
       redirect: "error",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, ...(cloud.header ? { [cloud.header.name]: cloud.header.value } : {}) },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, ...(service.header ? { [service.header.name]: service.header.value } : {}) },
       body: JSON.stringify({ instance }),
-      signal: AbortSignal.timeout(cloud.timeoutMs ?? 5_000),
+      signal: AbortSignal.timeout(service.timeoutMs ?? 5_000),
     });
   } catch (err) {
     return unavailable(`the grant request failed: ${(err as Error).message}`);
   }
   let body: Record<string, any>;
   try { body = await res.json() as Record<string, any>; } catch { return unavailable(`HTTP ${res.status} answered with a body that isn't JSON`); }
-  if (body?.schema !== CLOUD_GRANT_SCHEMA) return unavailable(`HTTP ${res.status} answered schema ${JSON.stringify(body?.schema)}`);
+  if (body?.schema !== GRANT_SCHEMA) return unavailable(`HTTP ${res.status} answered schema ${JSON.stringify(body?.schema)}`);
   if (body.status === "unknown" || body.status === "wrong_instance") return unauthenticated(NOT_VALID_HERE);
   if (body.status === "revoked") return unauthenticated("This connection was disconnected. Reconnect it where it was made.");
   if (body.status === "expired") return unauthenticated("This credential has expired.");
@@ -234,10 +266,10 @@ async function cloudCaller(cloud: CloudGrantOptions, url: URL, key: string, inst
     : grant.expires_at !== null && grant.expires_at !== undefined && !(Date.parse(grant.expires_at) > Date.now()) ? "expired" : null;
   if (problem === "expired") return unauthenticated("This credential has expired.");
   if (problem) return unavailable(`an active answer with an unusable ${problem}`);
-  // The principal the daemon records beside this caller's rows. A version that isn't a finite number is left out (Cloud's
-  // v1 sends a number).
-  return { seat, access: { principal: principal.id, owner: false, rigs, roots, workspace: false, customer: { objects } },
-    principal: { source: "cloud", id: principal.id, grant: grant.id, ...(Number.isFinite(grant.version) ? { version: grant.version } : {}) } };
+  // The principal the daemon records beside this caller's rows. A version that isn't a finite number is left out (a v1
+  // answer sends a number).
+  return { seat, access: { principal: principal.id, owner: false, rigs, roots, workspace: false, external: { objects } },
+    principal: { source: "grant-service", id: principal.id, grant: grant.id, ...(Number.isFinite(grant.version) ? { version: grant.version } : {}) } };
 }
 
 /** A node's seat name as the daemon derives it (deriveCanonicalFromEntry): {pod}-{member}@{rig}, the logical id split at
@@ -276,8 +308,11 @@ export type McpHttpOptions = {
   /** Builds the daemon client for one request; sessionName is the grant's seat (absent: the env's), and principal the
    *  caller whose grant was checked. */
   clientFactory?: (daemonUrl: string, sessionName?: string, principal?: McpPrincipal) => DaemonClient;
-  /** Grants come from OpenRig Cloud instead of the token file, which is then never read. */
-  cloudGrants?: CloudGrantOptions;
+  /** Grants come from an external grant service instead of the token file, which is then never read. */
+  grantService?: GrantServiceOptions;
+  /** With grantService: OAuth discovery for clients that sign in with OAuth. The public resource this server is reached
+   *  as and the authorization server that issues its keys, both served exactly as given. */
+  oauth?: { resource: string; issuer: string };
   /** How often one seat's call is recorded (default 60 s). */
   presenceIntervalMs?: number;
 };
@@ -302,22 +337,25 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 
 export async function startMcpHttpServer(opts: McpHttpOptions): Promise<{ url: string; authenticated: boolean; close(): Promise<void> }> {
   const loopback = isLoopbackHost(opts.host);
-  const cloud = opts.cloudGrants;
-  const cloudUrl = cloud ? cloudGrantUrl(cloud.url) : undefined;
-  const configured = cloud !== undefined || readGrants(opts.tokenFile) !== null;
+  const service = opts.grantService;
+  const serviceUrl = service ? grantServiceUrl(service.url) : undefined;
+  // The metadata describes the keys a grant service checks, so it's served only with one.
+  if (opts.oauth && !service) throw new McpHttpConfigError("--oauth-resource and --oauth-issuer need --grant-service");
+  const discovery = opts.oauth ? oauthDiscovery(opts.oauth) : undefined;
+  const configured = service !== undefined || readGrants(opts.tokenFile) !== null;
   if (!loopback && !configured) {
     throw new McpHttpConfigError(`Serving on ${opts.host} needs authentication: add a grant with rig mcp token add, then start again. With no grants, the server stays on loopback.`);
   }
   const makeClient = opts.clientFactory ?? ((url: string, sessionName?: string, principal?: McpPrincipal) =>
     new DaemonClient(url, sessionName === undefined ? undefined : { sessionName, ...(principal ? { principal } : {}) }));
   let boundPort = opts.port;
-  // A token-file grant's last call, for rig_team's presence. A Cloud customer isn't a team member, so none is kept.
+  // A token-file grant's last call, for rig_team's presence. An external caller isn't a team member, so none is kept.
   const presenceFile = nodePath.join(nodePath.dirname(opts.tokenFile), MCP_PRESENCE_FILE);
   const recordCall = presenceRecorder(presenceFile, opts.presenceIntervalMs);
   // Once auth has been configured here, a missing token file is a broken configuration, not a return to local-owner
   // mode: that takes a restart with no file. A beyond-loopback listener always starts with auth.
   let authSeen = configured;
-  // The instance a Cloud key must be bound to: the self id of the daemon whose seats this server acts on, read from that
+  // The instance a grant key must be bound to: the self id of the daemon whose seats this server acts on, read from that
   // daemon, never from a caller. Kept once known.
   let instance: string | undefined;
   const instanceId = async (): Promise<string | undefined> => {
@@ -325,14 +363,17 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<{ url: s
     try {
       const res = await fetch(`${opts.daemonUrl.replace(/\/+$/, "")}/healthz`, { signal: AbortSignal.timeout(2_000) });
       const self = res.ok ? ((await res.json()) as { selfHostId?: unknown }).selfHostId : undefined;
-      if (typeof self === "string" && CLOUD_INSTANCE.test(self)) instance = self;
+      if (typeof self === "string" && INSTANCE_ID.test(self)) instance = self;
     } catch { /* Unknown: refused below, and asked again on the next request. */ }
     return instance;
   };
-  const refuse = (res: http.ServerResponse, refusal: Refusal): void => {
+  // A 401 names the realm. With OAuth discovery it also points at the metadata, and says invalid_token when a bearer
+  // credential was presented and refused (RFC 6750 §3); a request with none gets no error.
+  const refuse = (res: http.ServerResponse, refusal: Refusal, presented = false): void => {
     // The detail stays in this server's log: the reply goes to a caller not yet authenticated.
     if (refusal.log) console.error(`rig mcp serve --http: ${refusal.log}`);
-    reply(res, refusal.status, { error: refusal.error, message: refusal.message }, refusal.status === 401 ? { "WWW-Authenticate": 'Bearer realm="openrig"' } : {});
+    const challenge = !discovery ? 'Bearer realm="openrig"' : `${discovery.challenge}${presented ? ', error="invalid_token"' : ""}`;
+    reply(res, refusal.status, { error: refusal.error, message: refusal.message }, refusal.status === 401 ? { "WWW-Authenticate": challenge } : {});
   };
   // One handler for both protocol revisions: a request carrying 2026-07-28's per-request envelope is served as that
   // revision, anything else (initialize and the rest of 2025) statelessly as before. Each request gets a fresh server for
@@ -347,16 +388,17 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<{ url: s
   const bearer = (req: http.IncomingMessage): string | undefined => /^Bearer\s+(\S+)\s*$/i.exec(req.headers.authorization ?? "")?.[1];
   const NO_BEARER = "This server needs a bearer credential: Authorization: Bearer <token>.";
 
-  /** The caller of one request on a Cloud-granted server: its key's grant, checked with Cloud, for a seat on this instance. */
-  const cloudRequestCaller = async (req: http.IncomingMessage): Promise<{ seat: string; access: McpAccess; principal: McpPrincipal } | Refusal> => {
+  /** The caller of one request on a server with a grant service: its key's grant, checked there, for a seat on this
+   *  instance. */
+  const serviceRequestCaller = async (req: http.IncomingMessage): Promise<{ seat: string; access: McpAccess; principal: McpPrincipal } | Refusal> => {
     const key = bearer(req);
     if (!key) return unauthenticated(NO_BEARER);
-    if (!CLOUD_KEY.test(key)) return unauthenticated(NOT_VALID_HERE);
+    if (!GRANT_KEY.test(key)) return unauthenticated(NOT_VALID_HERE);
     const self = await instanceId();
-    if (!self) return unavailable("this daemon reports no self id, so a Cloud key can't be checked against this instance");
-    const caller = await cloudCaller(cloud!, cloudUrl!, key, self);
+    if (!self) return unavailable("this daemon reports no self id, so a grant key can't be checked against this instance");
+    const caller = await grantServiceCaller(service!, serviceUrl!, key, self);
     if (!("seat" in caller)) return caller;
-    // Cloud names the seat; it must already exist here. It's checked, never created.
+    // The grant service names the seat; it must already exist here. It's checked, never created.
     try {
       const res = await fetch(`${opts.daemonUrl.replace(/\/+$/, "")}/api/whoami?${new URLSearchParams({ sessionName: caller.seat, compact: "1" }).toString()}`,
         { signal: AbortSignal.timeout(5_000) });
@@ -364,7 +406,7 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<{ url: s
         // whoami knows a seat by its sessions, and a seat created without a launch has none yet: it's then this daemon's
         // node of exactly that name, or it isn't here.
         const node = await nodeSeat(makeClient(opts.daemonUrl), caller.seat);
-        if (node === "absent") return { status: 503, error: "seat_unavailable", message: "This connection's seat isn't on this instance yet.", log: `Cloud named seat ${caller.seat}, which this daemon doesn't have` };
+        if (node === "absent") return { status: 503, error: "seat_unavailable", message: "This connection's seat isn't on this instance yet.", log: `The grant service named seat ${caller.seat}, which this daemon doesn't have` };
         if (node !== "found") return node;
       } else if (!res.ok) return unavailable(`the seat check for ${caller.seat} answered HTTP ${res.status}`);
     } catch (err) {
@@ -374,7 +416,13 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<{ url: s
   };
 
   const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
-    if (new URL(req.url ?? "/", "http://localhost").pathname !== "/mcp") {
+    const { pathname } = new URL(req.url ?? "/", "http://localhost");
+    // The OAuth metadata is static and public: served before any credential or grant-service call, whatever the Host.
+    if (discovery && req.method === "GET" && pathname === discovery.path) {
+      reply(res, 200, discovery.document);
+      return;
+    }
+    if (pathname !== "/mcp") {
       reply(res, 404, { error: "not_found", message: "The MCP endpoint is /mcp." });
       return;
     }
@@ -382,9 +430,9 @@ export async function startMcpHttpServer(opts: McpHttpOptions): Promise<{ url: s
     let seat: string | undefined;
     let principal: McpPrincipal | undefined;
     let authenticated = false;
-    if (cloud) {
-      const caller = await cloudRequestCaller(req);
-      if (!("seat" in caller)) { refuse(res, caller); return; }
+    if (service) {
+      const caller = await serviceRequestCaller(req);
+      if (!("seat" in caller)) { refuse(res, caller, bearer(req) !== undefined); return; }
       ({ access, seat, principal } = caller);
       authenticated = true;
     } else {

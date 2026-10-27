@@ -40,6 +40,19 @@ and slice views, pagination, absent seats and partial results all use the same
 composer. Selecting a session changes where those tiles are placed. It does
 not relaunch the seats' tmux sessions or move queue ownership.
 
+## Open results
+
+For Herdr, a successful layout request alone does not count its seats as opened.
+OpenRig checks the returned tab's pane list. A missing tab identity or an
+unreadable, empty or unattributable listing puts the affected seats in
+`degraded`, with `code: "pane_unconfirmed"`, instead of `opened`. The CLI and
+TUI name those seats as unconfirmed. Inspect the terminal before retrying:
+the layout may have taken effect even though its panes could not be confirmed.
+Confirmed seats on other pages still count; with none confirmed, the command
+returns a nonzero exit status. Reusing an existing workspace keeps its separate
+reuse result. This pane check does not prove desktop visibility or create a
+verified viewer mapping.
+
 ## Replacing a seat's session
 
 New tiles keep their place when a seat's tmux session is replaced. They wait up
@@ -139,3 +152,80 @@ session keeps the normal HTTP 200 provider result with `ok: false`, its selected
 `session`, an error code and direct-attach guidance.
 The `kernel_seats_unavailable` result also keeps the selected session, so the CLI
 reports that known failure instead of replacing it with an unconfirmed-session error.
+
+## Task terminal views
+
+`rig terminal open qitem:<id> --provider herdr --json` opens a derived, read-only
+view of the current owners of a local queue episode. The episode includes the
+requested row and explicitly linked descendants; only pending, in-progress and
+blocked obligations contribute owners. It does not include historical senders,
+closed predecessors, parent episodes or siblings. Membership is not input
+permission.
+
+The existing daemon endpoints accept the same view:
+
+```text
+GET /api/terminal/preview?view=qitem:<id>&provider=herdr
+POST /api/terminal/open {"view":"qitem:<id>","provider":"herdr","expectedPlan":"<preview planId>"}
+```
+
+Preview and open include `task: {qitemId, name, complete, issues, members}`. Each member
+names its structured `{hostId, nodeId}` key (null when unresolved), seat,
+contributing `obligations`, `availability` and `viewerStatus`. Stopped, missing,
+external and unresolved remote owners remain visible. Remote queues are not
+crawled and no remote tmux socket is guessed. A bounded or damaged lineage is
+explicitly incomplete; it is never silently presented as the whole team.
+
+The local lineage read has work limits: 50,000 scanned rows (plus one overflow
+sentinel), 8 MiB of encoded lineage, 100,000 links, and 16 KiB per chain record.
+It reads one snapshot from the requested task forward, then probes earlier active
+obligations using the queue's existing state index and follows references by exact
+ID, including closed intermediaries. A child may arrive before its referenced root.
+All these reads share the work limits; unrelated older closed history is not scanned.
+Only the requested episode is expanded, up to 256 rows. Caller-supplied task IDs
+are supported.
+Hitting a work limit preserves known members and reports incomplete membership;
+it does not claim that an owner outside the scanned history is absent.
+
+Preview and open also include `viewDescriptor: {kind, name}`: `following` for
+derived views and `fixed` for a saved layout. A task uses its row summary as
+its name, falling back to the qitem ID. The existing preview `view` string is
+unchanged. A following view derives membership when requested; it does not
+mean an open workspace updates itself.
+
+Preview is read-only. A member without owned viewer provenance is
+`not-provisioned`; the ensure operation below can establish a reusable provider
+mapping. An explicit open retains the provider's existing workspace behavior;
+it does not continuously reconcile the view or change an agent's lifecycle.
+
+## Ensuring an owner viewer
+
+The owner-facing HTTP operation `POST /api/terminal/viewer/ensure` accepts
+`{view:"qitem:<id>", member:{hostId,nodeId}, provider:"herdr", session,
+expectedPlan}`. Use a current preview's member key and plan. This explicit
+operation uses the daemon's existing terminal bearer and browser boundary;
+a bridge must retain its signed-in owner, Origin and expiry controls. It does
+not grant authority based on task membership or accept a caller terminal ID.
+
+On the qualified Linux Herdr 0.9.5/protocol 22 endpoint, it creates one viewer
+or reuses an owned, verified `{workspaceId,paneId,terminalId,readOnly}` mapping.
+A repeated/concurrent request does not create another viewer. A lost create
+reply is reconciled before starting anything else; a lost run reply is checked
+against the actual foreground process, never blindly repeated. Unknown or
+changed terminal identity remains unconfirmed. The operation does not relayout,
+close departed viewers, take over control, focus existing panes or launch/stop
+agents. A first workspace on an otherwise empty Herdr server may become focused.
+
+Preview remains passive and names `not-provisioned`, `verified` or `unconfirmed`
+viewer status. Studio can ensure a new member, add its browser frame, and retain
+a pinned leaver labeled as no longer participating. The provider mapping is
+small presentation provenance, separate from queue membership. Herdr display
+labels are not that provenance. Other providers/platforms remain unsupported
+for ensure-viewer until qualified; ordinary open retains its existing behavior.
+
+Writable tile clients use `tmux attach -f ignore-size`; read-only clients keep
+`-r` (which also implies ignore-size). This can avoid contributing to sizing
+when other clients establish the agent window's dimensions. It is **not resize
+isolation**: opening a tile can change the agent's terminal size when it is the
+only sizing client. Observers of a Herdr terminal do not themselves resize it;
+a controlling browser can. No cross-version resize guarantee is implied.

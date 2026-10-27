@@ -794,11 +794,14 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   let reconcileDetached = 0;
   let reconcileUnseen = 0;
   let reconcileErrors = 0;
+  // Kernel boot restores a kernel only when this reconcile is what found it down.
+  const detachedAtStart = new Set<string>();
   for (const rig of rigs) {
     try {
       const result = await reconciler.reconcile(rig.id);
       reconcileChecked += result.checked;
       reconcileDetached += result.detached;
+      for (const id of result.detachedSessionIds) detachedAtStart.add(id);
       reconcileUnseen += result.unseen.length;
       reconcileErrors += result.errors.length;
       for (const u of result.unseen) {
@@ -1225,6 +1228,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       // Synchronous, so the restore is registered before any request can ask for the same one.
       restoreLostKernel: (rigId) =>
         restoreExistingRigUnattended({ rigRepo, snapshotRepo, snapshotCapture, restoreOrchestrator, runtimeAdapters: runtimeAdaptersMap, tmuxAdapter }, rigId, (p) => fs.existsSync(p)),
+      detachedAtStart,
     });
     try {
       // eslint-disable-next-line no-console
@@ -2031,6 +2035,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     const { createRexCliTransport } = await import("./domain/terminal/rex-transport.js");
     const { CmuxLayoutService } = await import("./domain/cmux-layout-service.js");
     const { TerminalViewsStore } = await import("./domain/terminal/terminal-views-store.js");
+    const { readTaskTerminalView, resolveLocalTaskSeat } = await import("./domain/terminal/task-terminal-view.js");
+    const { getSelfHostId } = await import("./domain/hosts/fanout-contract.js");
     const { getNodeInventory, getNodeInventoryForRigs } = await import("./domain/node-inventory.js");
     const { loadHostRegistry, resolveHost: resolveHostInRegistry } = await import(
       "./domain/hosts/hosts-registry-reader.js"
@@ -2112,6 +2118,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         }
         return rows;
       },
+      resolveTaskView: (qitemId) => readTaskTerminalView(db, qitemId, (address) =>
+        resolveLocalTaskSeat(db, address, getSelfHostId(), sessionRegistry.resolveAddress(address)?.nodeId)),
       listRigNames: () => rigRepo.listRigs().map((r) => r.name),
       resolveHost: (id) => {
         const res = loadHostRegistry();
@@ -2650,7 +2658,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // S20 — bind provenance rides the health surface (absent = legacy healthz body).
   deps.bindPlan = opts?.bindPlan;
 
-  // Hermeticity (hotfix qitem-20260822230440-da0d2ad6 FIX 2): the REAL daemon
+  // Hermeticity (hotfix FIX 2): the REAL daemon
   // constructs the drift observer here with an eagerly-warmed mode cache — the
   // boot-time warm the observer's constructor used to do. Constructing it at
   // the boot boundary (not inside createApp) is what keeps test-built apps
