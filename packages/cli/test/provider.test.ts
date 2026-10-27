@@ -111,10 +111,18 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
     expect(seen.slice(before).some(r => r.url === "/api/provider/switch")).toBe(false);
   });
 
-  it.each([["--stored-login"], ["--to-account", "other"], ["--token-file", "/tokens/new"], ["--account-home", "/accounts/new"]])("refuses conflicting clear selectors %j before requesting a switch", async selectors => {
+  it.each([{ selectors: ["--stored-login"] }, { selectors: ["--to-account", "other"] }, { selectors: ["--token-file", "/tokens/new"] }, { selectors: ["--account-home", "/accounts/new"] }])("refuses conflicting clear selectors $selectors before requesting a switch", async ({ selectors }) => {
     const before = seen.length;
     const result = await run(["switch", "--seat", "dev-a@rig", "--clear-account-home", "--reason", "Plan reset", ...selectors], runningDeps(port));
     expect(result.exitCode).toBe(1);
+    expect(seen.length).toBe(before);
+  });
+
+  it("a clear without its reason names the required flag without asking for a conflicting account selector", async () => {
+    const before = seen.length;
+    const result = await run(["switch", "--seat", "dev-a@rig", "--clear-account-home"], runningDeps(port));
+    expect(result.exitCode).toBe(1);
+    expect(result.logs).toContain("Pass --reason with --clear-account-home.");
     expect(seen.length).toBe(before);
   });
 
