@@ -201,19 +201,21 @@ describe("live seat runtime switch", () => {
     expect(await svc.setRuntime({ seatRef: SEAT, runtime: "claude-code", reason: "Ordinary switch" })).toMatchObject({ ok: true });
   });
 
-  it("a plain runtime switch stages and commits without the previous runtime's stale account home", async () => {
-    db.prepare("UPDATE nodes SET account_home = ?, claude_token_ref = ? WHERE id = ?").run("/accounts/old-codex", JSON.stringify({ label: "old", tokenFile: "/tokens/old" }), nodeId);
-    const target = adapter("claude-code");
+  it.each(["codex", "claude-code"])("a plain switch from %s clears its stale home before the successor starts", async from => {
+    const to = from === "codex" ? "claude-code" : "codex";
+    db.prepare("UPDATE nodes SET account_home = ?, claude_token_ref = ? WHERE id = ?").run("/accounts/old-source", JSON.stringify({ label: "old", tokenFile: "/tokens/old" }), nodeId);
+    db.prepare("UPDATE nodes SET runtime = ? WHERE id = ?").run(from, nodeId);
+    const target = adapter(to);
     vi.mocked(target.launchHarness).mockImplementation(async binding => {
       expect(binding.accountHome).toBeNull();
       expect(binding.accountToken).toBeNull();
       return { ok: true };
     });
-    const svc = service({ runtimeAdapters: { "claude-code": target } }); successorConfirms(svc);
-    expect(await svc.setRuntime({ seatRef: SEAT, runtime: "claude-code", reason: "Change runtime" })).toMatchObject({ ok: true });
+    const svc = service({ runtimeAdapters: { [to]: target } }); successorConfirms(svc);
+    expect(await svc.setRuntime({ seatRef: SEAT, runtime: to, reason: "Change runtime" })).toMatchObject({ ok: true });
     expect(db.prepare("SELECT account_home, claude_token_ref FROM nodes WHERE id = ?").get(nodeId))
       .toEqual({ account_home: null, claude_token_ref: null });
-    expect(rigRepo.getEffectiveSeatEnv(nodeId).CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(rigRepo.getEffectiveSeatEnv(nodeId)[to === "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"]).toBeUndefined();
   });
 
   it.each(["codex", "claude-code"])("the %s successor gets the target home before any configuration commit", async (runtime) => {
