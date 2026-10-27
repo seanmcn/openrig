@@ -664,7 +664,10 @@ describe("live seat runtime switch", () => {
       fakeTmux.signalPaneProcess.mockImplementation(async () => ({ ok: false, code: "tmux_error", message: "controlled retirement failure" }) as never);
       fakeTmux.isPaneDead.mockImplementation(async () => false);
       const svc = service();
-      expect(await svc.setRuntime({ seatRef: SEAT, runtime: "claude-code", reason: "limit", confirmTimeoutMs: 10_000 })).toMatchObject({ ok: false, committed: false });
+      expect(await svc.setRuntime({ seatRef: SEAT, runtime: "claude-code", reason: "limit", confirmTimeoutMs: 10_000 })).toMatchObject({
+        ok: false, committed: false, recoveryPending: true,
+        guidance: "Recovery is pending for dev.impl@seat-rig. Run rig seat set-runtime dev.impl@seat-rig --recover.",
+      });
       const row = openSwitch();
       expect(row).toMatchObject({ phase: "abandoned", attention: expect.stringMatching(/couldn't be retired/) });
       const claim = await a.request(`/api/queue/${work.qitemId}/claim`, { method: "POST", headers: as(row.successor_generation), body: "{}" });

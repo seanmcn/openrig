@@ -990,6 +990,8 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     // OPR.0.4.8.2 agnostic rip-out: provisionRigPermissions (C2) removed — OpenRig no longer
     // authors any config-file permission policy. Trust/onboarding (C3/C4) are neutral plumbing, kept.
     const home = this.fs.homedir ?? (typeof process !== "undefined" ? process.env.HOME : undefined);
+    const accountHome = binding.accountHome !== undefined ? binding.accountHome
+      : binding.nodeId ? this.claudeManagedLaunch?.accountHome(binding.nodeId) : undefined;
     // Match launchHarness: an explicit permission mode exports the selected home to the child, so
     // only that home is provisioned.
     const managed = binding.permissionMode !== undefined ? this.claudeManagedLaunch : undefined;
@@ -999,17 +1001,17 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     const failures: string[] = [];
     if (managed) {
       // The seat's own home when it declares one (member or rig `env:`), else the daemon's.
-      if (cwd) statePaths.push(managed.configPaths(cwd, binding.nodeId, binding.accountHome).statePath);
+      if (cwd) statePaths.push(managed.configPaths(cwd, binding.nodeId, accountHome).statePath);
     } else {
-      if (home) statePaths.push(nodePath.join(home, ".claude.json"));
-      // A classic seat types `claude` into its pane's shell, which inherits the tmux server's
+      if (!accountHome && home) statePaths.push(nodePath.join(home, ".claude.json"));
+      // Without an isolated account home, a classic seat inherits the tmux server's
       // environment, not the daemon's, so the bootstrap cannot see which home that child reads.
       // When the seat's own `env:` or the daemon selects CLAUDE_CONFIG_DIR, provision that home too. This deliberately
       // replaces #565's rule that classic bootstrap writes exactly one file and leaves the
       // selected home untouched: a child that inherits the daemon's selection read neither.
       try {
         const selectedCwd = cwd ?? (binding.nodeId ? this.claudeManagedLaunch?.boundCwd(binding.nodeId) : undefined);
-        const selected = selectedCwd ? this.claudeManagedLaunch?.selectedStatePath(selectedCwd, binding.nodeId, binding.accountHome) : undefined;
+        const selected = selectedCwd ? this.claudeManagedLaunch?.selectedStatePath(selectedCwd, binding.nodeId, accountHome) : undefined;
         if (selected && !statePaths.includes(selected)) statePaths.push(selected);
       } catch (err) {
         failures.push((err as Error).message);

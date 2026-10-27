@@ -142,6 +142,15 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
     expect(result.logs.join("\n")).not.toContain("A fresh conversation carries the handover");
   });
 
+  it("prints refusal recovery instructions even without warnings", async () => {
+    const result = await run(["switch", "--seat", "dev-a@rig", "--to-account", "recovery-refused", "--account-home", "/accounts/api",
+      "--reason", "Plan limit"], runningDeps(port));
+    expect(result.exitCode).toBe(1);
+    expect(result.logs).toContain("The staged successor could not be retired.");
+    expect(result.logs).toContain("Run rig seat set-runtime dev-a@rig --recover.");
+    expect(result.logs.join("\n")).not.toContain("A fresh conversation carries the handover");
+  });
+
   it("shows account-home dry-run settings, cleared choices and costs without requesting a switch", async () => {
     const before = seen.length;
     const args = ["switch", "--seat", "dev-a@rig", "--to-account", "api-account", "--account-home", "/accounts/api",
@@ -186,6 +195,8 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
       if (path === "/api/provider/precheck") return send(200, { safe: false, reasons: ["target_needs_reauth"] });
       if (path === "/api/provider/switch") {
         if (body.includes("bad")) return send(400, { error: "invalid target account" });
+        if (JSON.parse(body).toAccount === "recovery-refused") return send(409, { ok: false, recoveryPending: true,
+          message: "The staged successor could not be retired.", guidance: "Run rig seat set-runtime dev-a@rig --recover." });
         if (JSON.parse(body).toAccount === "recovery-pending") return send(200, { ok: true, changed: true,
           recoveryPending: true, warnings: ["Run rig seat set-runtime dev-a@rig --recover before retrying."] });
         if (JSON.parse(body).accountHome || JSON.parse(body).clearAccountHome) return send(200, { ok: true, changed: true, recoveryPending: false });
