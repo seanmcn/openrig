@@ -314,7 +314,7 @@ export function providerRoutes(opts: ProviderRoutesOptions = {}): Hono {
     // A Claude seat's own token file, or `storedLogin=1` for its config dir's stored login.
     const tokenFile = c.req.query("storedLogin") === "1" ? null : c.req.query("tokenFile");
     // An unsafe verdict is a valid 200 response, not an error.
-    return c.json(await svc.precheck({ seat, toAccount, ...(tokenFile !== undefined ? { tokenFile } : {}) }, seatRestartOf(c), claudeSeatOf(c)), 200);
+    return c.json(await svc.precheck({ seat, toAccount, ...(tokenFile !== undefined ? { tokenFile } : {}), ...(c.req.query("apiKeyFile") !== undefined ? { apiKeyFile: c.req.query("apiKeyFile") } : {}) }, seatRestartOf(c), claudeSeatOf(c)), 200);
   });
 
   router.post("/switch", async (c) => {
@@ -344,8 +344,12 @@ export function providerRoutes(opts: ProviderRoutesOptions = {}): Hono {
     if (tokenFile !== undefined && tokenFile !== null && typeof tokenFile !== "string") {
       return c.json({ error: "tokenFile must be a path, or null for the stored login" }, 400);
     }
+    const apiKeyFile = body["apiKeyFile"];
+    if (apiKeyFile !== undefined && (typeof apiKeyFile !== "string" || tokenFile !== undefined)) {
+      return c.json({ error: "apiKeyFile must be a path and cannot be combined with tokenFile" }, 400);
+    }
     // Business outcome (incl. failed_safely / rebind_in_progress) is an explicit 200 payload.
-    return c.json(await svc.switchAccount({ seat, toAccount, forceUnsafe, ...(tokenFile !== undefined ? { tokenFile } : {}) },
+    return c.json(await svc.switchAccount({ seat, toAccount, forceUnsafe, ...(tokenFile !== undefined ? { tokenFile } : {}), ...(typeof apiKeyFile === "string" ? { apiKeyFile } : {}) },
       seatRestartOf(c), claudeSeatOf(c)), 200);
   });
 

@@ -33,6 +33,15 @@ function fixture(opts: { daemonEnv?: Record<string, string>; memberEnv?: Record<
 }
 
 describe("what would outrank a Claude seat's own subscription token", () => {
+  it("API-key launch scrubs inherited auth but refuses selectors in settings env", async () => {
+    const f = fixture({ daemonEnv: { CLAUDE_CODE_OAUTH_TOKEN: "synthetic-old", ANTHROPIC_API_KEY: "synthetic-old-api" } });
+    expect((await f.managed.credentialPrecedence("node", { apiKey: true })).conflicts).toEqual([]);
+    writeFileSync(path.join(f.home, ".claude", "settings.json"), JSON.stringify({ apiKeyHelper: "synthetic-helper" }));
+    expect((await f.managed.credentialPrecedence("node", { apiKey: true })).conflicts).toEqual([]);
+    writeFileSync(path.join(f.cwd, ".claude", "settings.json"), JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "synthetic-other-account" } }));
+    expect((await f.managed.credentialPrecedence("node", { apiKey: true })).conflicts).toMatchObject([{ name: "ANTHROPIC_AUTH_TOKEN" }]);
+  });
+
   it("names each one in the launch environment and the settings files the seat loads, with its remedy", async () => {
     const f = fixture({ daemonEnv: { ANTHROPIC_AUTH_TOKEN: "x" }, memberEnv: { ANTHROPIC_API_KEY: "y" }, worktree: true });
     writeFileSync(path.join(f.home, ".claude", "settings.json"), JSON.stringify({ apiKeyHelper: "/usr/local/bin/key" }));

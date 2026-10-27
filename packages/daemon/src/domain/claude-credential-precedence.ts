@@ -28,7 +28,7 @@ export interface CredentialPrecedence {
 /** One settings file's `apiKeyHelper` and outranking `env` entries, and with `storedLogin` its `env` block's
  *  `CLAUDE_CODE_OAUTH_TOKEN`. An absent file has none. */
 export function settingsFileConflicts(file: string, scope: string, read: (file: string) => string = (f) => fs.readFileSync(f, "utf8"),
-  opts: { storedLogin?: boolean } = {}): { conflicts: CredentialConflict[]; instead?: CredentialConflict[]; checked?: string; notChecked?: string } {
+  opts: { storedLogin?: boolean; apiKey?: boolean } = {}): { conflicts: CredentialConflict[]; instead?: CredentialConflict[]; checked?: string; notChecked?: string } {
   let text: string;
   try { text = read(file); } catch (err) {
     return (err as NodeJS.ErrnoException).code === "ENOENT"
@@ -39,9 +39,9 @@ export function settingsFileConflicts(file: string, scope: string, read: (file: 
   try { settings = JSON.parse(text) as typeof settings; } catch { return { conflicts: [], notChecked: `${scope} settings ${file} (not valid JSON)` }; }
   const remedy = `remove it from ${file} (OpenRig doesn't edit settings files)`;
   const conflicts: CredentialConflict[] = [];
-  if (settings?.apiKeyHelper !== undefined) conflicts.push({ name: "apiKeyHelper", source: `${scope} settings ${file}`, remedy });
+  if (!opts.apiKey && settings?.apiKeyHelper !== undefined) conflicts.push({ name: "apiKeyHelper", source: `${scope} settings ${file}`, remedy });
   const env = settings?.env && typeof settings.env === "object" ? settings.env as Record<string, unknown> : {};
-  for (const name of OUTRANKING_TOKEN_ENV) {
+  for (const name of opts.apiKey ? [...OUTRANKING_TOKEN_ENV, "ANTHROPIC_BASE_URL"] : OUTRANKING_TOKEN_ENV) {
     if (env[name] !== undefined) conflicts.push({ name, source: `the env block of ${scope} settings ${file}`, remedy });
   }
   const instead = opts.storedLogin && env.CLAUDE_CODE_OAUTH_TOKEN !== undefined

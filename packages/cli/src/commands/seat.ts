@@ -68,7 +68,7 @@ interface SeatStatusResponse {
     source: "member" | "rig" | "daemon" | "native_default";
     ignored?: { source: string; value: string };
   };
-  claude_token?: { label: string; token_file: string; file: "readable" | "unusable"; problem?: string; notice?: string };
+  claude_token?: { kind?: "api-key"; label: string; token_file: string; file: "readable" | "unusable"; problem?: string; notice?: string };
   session_reason?: string | null;
   startup_status: string | null;
   occupant_lifecycle: string;
@@ -208,7 +208,7 @@ function printHuman(status: SeatStatusResponse): void {
   }
   if (status.claude_token) {
     const t = status.claude_token;
-    console.log(`Claude subscription token: ${t.label}, read from ${t.token_file} at each launch (${t.file === "readable" ? "readable now" : "won't apply at the next launch"})`);
+    console.log(`Claude ${t.kind === "api-key" ? "API key" : "subscription token"}: ${t.label}, read from ${t.token_file} at each launch (${t.file === "readable" ? "readable now" : "won't apply at the next launch"})`);
     if (t.notice) console.log(`  ${t.notice}`);
   }
   if (status.typingGuard) {

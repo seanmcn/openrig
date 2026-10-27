@@ -46,6 +46,19 @@ function appWith(svc: ProviderService | null): Hono {
 }
 
 describe("provider routes", () => {
+  it("forwards API-key file references on both endpoints and refuses conflicting selectors", async () => {
+    const precheck = vi.fn<ProviderService["precheck"]>(async () => ({ safe: true as const }));
+    const switchAccount = vi.fn<ProviderService["switchAccount"]>(async () => ({ outcome: "succeeded" as const }));
+    const app = appWith({ ...stubService, precheck, switchAccount });
+    await app.request("/api/provider/precheck?seat=dev-a@rig&toAccount=api&apiKeyFile=%2Fsynthetic%2Fkey");
+    expect(precheck.mock.calls[0]?.[0]).toMatchObject({ apiKeyFile: "/synthetic/key" });
+    const request = (body: object) => app.request("/api/provider/switch", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    expect((await request({ seat: "dev-a@rig", toAccount: "api", apiKeyFile: "/synthetic/key" })).status).toBe(200);
+    expect(switchAccount.mock.calls[0]?.[0]).toMatchObject({ apiKeyFile: "/synthetic/key" });
+    expect((await request({ seat: "dev-a@rig", toAccount: "api", apiKeyFile: "/synthetic/key", tokenFile: null })).status).toBe(400);
+    expect(switchAccount).toHaveBeenCalledTimes(1);
+  });
+
   it("move reports are queue items now, not the removed event-log record: no setting gates them, and there's no /moves/:id", async () => {
     const app = appWith(stubService);
     // This app wires no queue, so the report routes say so rather than answering a disabled-feature 409.

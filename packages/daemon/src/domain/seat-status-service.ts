@@ -44,7 +44,7 @@ export interface SeatStatus {
   };
   /** A Claude seat's own subscription token: its reference (never the value), and whether the file would give Claude the
    *  token at the next launch. When it wouldn't, Claude starts on the config dir's stored login, and `notice` says so. */
-  claude_token?: { label: string; token_file: string; file: "readable" | "unusable"; problem?: string; notice?: string };
+  claude_token?: { kind?: "api-key"; label: string; token_file: string; file: "readable" | "unusable"; problem?: string; notice?: string };
   terminalPolicy: ReturnType<TerminalPolicyStore["account"]> | { state: "unknown"; error: string };
   permissions: {
     selectionState: "explicit" | "inherit" | "unknown";
@@ -195,7 +195,7 @@ export class SeatStatusService {
     const ref = readClaudeSeatTokenRef(this.rigRepo.db, nodeId);
     if (!ref) return {};
     const problem = claudeSeatTokenFileProblem(ref);
-    return { claude_token: { label: ref.label, token_file: ref.tokenFile, file: problem ? "unusable" : "readable",
+    return { claude_token: { ...(ref.kind ? { kind: ref.kind } : {}), label: ref.label, token_file: ref.tokenFile, file: problem ? "unusable" : "readable",
       ...(problem ? { problem, notice: claudeSeatTokenFallbackNotice(ref, problem) } : {}) } };
   }
 
