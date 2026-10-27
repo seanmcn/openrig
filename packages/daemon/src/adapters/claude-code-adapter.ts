@@ -294,7 +294,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     // A seat's own subscription token: the managed launch carries it; the classic launch gets its step in the staged
     // subshell. A launch that can't apply it still starts, and says so.
     const seatToken = managed ? null : this.claudeManagedLaunch?.seatTokenLaunch?.(binding.nodeId,
-      binding.accountHome !== undefined ? { ref: binding.accountHome === null ? binding.accountToken : binding.accountToken ?? null, required: !!binding.accountHome } : {}) ?? null;
+      binding.accountHome !== undefined ? { accountHome: binding.accountHome, ref: binding.accountHome === null ? binding.accountToken : binding.accountToken ?? null, required: !!binding.accountHome } : {}) ?? null;
     const tokenWarnings: string[] = [...(managed?.warnings ?? seatToken?.warnings ?? [])];
     const session = binding.tmuxSession;
     const assertSelected = opts.beforeNativeDispatch ? () => {

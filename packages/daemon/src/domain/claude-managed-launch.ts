@@ -131,16 +131,18 @@ export class ClaudeManagedLaunch {
   /** The launch step that gives the seat's Claude its own subscription token (`rig provider switch --seat`), and the
    *  launch's warning when the file won't apply (checked without reading it); null for a seat without a reference.
    *  Launches without an explicit permission mode use it too, through the seat launch environment. */
-  seatTokenLaunch(nodeId: string, opts: { removeOnFailure?: boolean; required?: boolean; ref?: ClaudeSeatTokenRef | null } = {}): { ref: ClaudeSeatTokenRef; step: string; warnings: readonly string[] } | null {
+  seatTokenLaunch(nodeId: string, opts: { removeOnFailure?: boolean; required?: boolean; ref?: ClaudeSeatTokenRef | null; accountHome?: string | null } = {}): { ref: ClaudeSeatTokenRef; step: string; warnings: readonly string[] } | null {
     const ref = opts.ref === undefined ? readClaudeSeatTokenRef(this.db, nodeId) : opts.ref;
     const required = opts.required || !!this.accountHome(nodeId);
     if (!ref) return null;
     const problem = claudeSeatTokenFileProblem(ref);
     if (ref.kind === "api-key") {
       if (problem) throw new Error(`Selected API-key file unavailable: ${problem}. No Claude process started.`);
-      const cwd = this.target(nodeId).cwd!;
+      const row = this.db.prepare("SELECT cwd FROM nodes WHERE id = ?").get(nodeId) as { cwd: string | null } | undefined;
+      if (!row?.cwd || !path.isAbsolute(row.cwd)) throw new Error("Selected API-key launch has no absolute working directory; no agent started.");
+      const cwd = row.cwd;
       const root = projectRootForLocalSettings(cwd) ?? cwd;
-      for (const file of new Set([path.join(this.configPaths(cwd, nodeId).configDir, "settings.json"),
+      for (const file of new Set([path.join(this.configPaths(cwd, nodeId, opts.accountHome).configDir, "settings.json"),
         path.join(cwd, ".claude", "settings.json"), path.join(cwd, ".claude", "settings.local.json"), path.join(root, ".claude", "settings.local.json")])) {
         const found = settingsFileConflicts(file, "selected", undefined, { apiKey: true });
         if (found.conflicts.length || found.notChecked) throw new Error("Claude credential settings could override the selected API key or could not be checked; no Claude process started.");
@@ -221,7 +223,7 @@ export class ClaudeManagedLaunch {
     const row = this.db.prepare("SELECT cwd FROM nodes WHERE id = ?").get(nodeId) as { cwd: string | null } | undefined;
     if (!row?.cwd) throw new Error("The selected account's working directory is unavailable; no agent started.");
     const selected = token === undefined ? readClaudeSeatTokenRef(this.db, nodeId) : token;
-    const problem = isolatedClaudeAccountProblem(home, row.cwd, !!selected);
+    const problem = isolatedClaudeAccountProblem(home, row.cwd, !!selected, selected?.kind === "api-key");
     if (problem) throw new Error(problem);
   }
 
@@ -372,13 +374,13 @@ export class ClaudeManagedLaunch {
     // removals are worked out, so the value never passes through OpenRig. The reduction keeps the name the step sets; when the
     // file can't be read, Claude still starts, and a token the reduction would have removed is removed by the step instead.
     const tokenKept = selectedKeys.includes("CLAUDE_CODE_OAUTH_TOKEN");
-    const token = this.seatTokenLaunch(target.nodeId, { removeOnFailure: !tokenKept,
+    const token = this.seatTokenLaunch(target.nodeId, { removeOnFailure: !tokenKept, accountHome: target.accountHome,
       ...(target.accountHome !== undefined ? { ref: target.accountHome === null ? target.accountToken : target.accountToken ?? null, required: !!target.accountHome } : {}) });
     const tokenStep = token ? `${token.step} && ` : "";
     const warnings = token?.warnings ?? Object.freeze([]);
     return Object.freeze({ assertCurrent, warnings, configDir: context.configDir, executable: context.executable, executableIsScript: context.executableIsScript, command: (args: readonly string[], launchEnv: Readonly<Record<string, string>> = {}) => {
       assertCurrent();
-      if (token?.ref.kind === "api-key") this.seatTokenLaunch(target.nodeId);
+      if (token?.ref.kind === "api-key") this.seatTokenLaunch(target.nodeId, { ref: token.ref, accountHome: target.accountHome });
       const launch = Object.entries(launchEnv).filter(([key]) => !credentialKeys.includes(key)).map(([key, value]) => `export ${shellQuote(`${key}=${value}`)}`);
       const keep = [...selectedKeys, ...terminalKeys, "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
         ...Object.keys(launchEnv).filter(key => !credentialKeys.includes(key)), ...(token ? [token.ref.kind === "api-key" ? "ANTHROPIC_API_KEY" : "CLAUDE_CODE_OAUTH_TOKEN"] : [])];

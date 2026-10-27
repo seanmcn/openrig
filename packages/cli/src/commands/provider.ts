@@ -597,11 +597,16 @@ model, permissions, config home and conversation are retained; in-flight work is
 API-key approval before the first turn. OpenRig does not enforce API budgets or choose when to fall back.
 Codex can select a saved API-key auth profile with --to-account just like a subscription profile. Its shared-home effects
 and native credential-store requirements are unchanged. No fresh account home or conversation is created.
+Do not combine --api-key-file with --account-home or --clear-account-home; select a home and switch credentials separately.
 --clear-account-home returns to the configured member/rig/daemon/native home through a fresh successor with a handover.
 Use it without --to-account, --stored-login, --account-home or --token-file. It removes an account-home token reference
 only after confirmation; it does not restore historical login bytes. Anthropic active/default profiles live outside
 CLAUDE_CONFIG_DIR and are not isolated by an account home; check them before relying on a stored login.`)
     .action(async (opts: AccountOpts & { seat: string; forceUnsafe?: boolean; json?: boolean; accountHome?: string; clearAccountHome?: boolean; reason?: string; model?: string; codexConfigProfile?: string; dryRun?: boolean }) => {
+      if (opts.apiKeyFile !== undefined && (opts.accountHome !== undefined || opts.clearAccountHome)) {
+        console.error("Use --api-key-file for an in-place credential switch; select or clear an account home in a separate switch.");
+        process.exitCode = 1; return;
+      }
       if (opts.clearAccountHome && (opts.accountHome !== undefined || opts.tokenFile !== undefined || opts.toAccount !== undefined || opts.storedLogin)) {
         console.error("Use --clear-account-home alone, without --account-home, --token-file, --to-account or --stored-login.");
         process.exitCode = 1; return;

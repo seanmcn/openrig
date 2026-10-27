@@ -332,6 +332,9 @@ export function providerRoutes(opts: ProviderRoutesOptions = {}): Hono {
       return c.json({ error: "body must be a JSON object" }, 400);
     }
     const body = raw as Record<string, unknown>;
+    if (body["apiKeyFile"] !== undefined && (body["accountHome"] !== undefined || body["clearAccountHome"] === true)) {
+      return c.json({ error: "apiKeyFile cannot be combined with accountHome or clearAccountHome; switch credentials in place separately" }, 400);
+    }
     const seat = body["seat"];
     const clearAccountHome = body["clearAccountHome"] === true;
     if (body["clearAccountHome"] !== undefined && typeof body["clearAccountHome"] !== "boolean") return c.json({ error: "clearAccountHome must be true or false" }, 400);

@@ -52,6 +52,33 @@ if [ -n "\${ANTHROPIC_API_KEY-}" ]; then printf '{"API":"%s","TOKEN":"%s"}' "$AN
 }
 
 describe.skipIf(process.platform === "win32")("a Claude seat's own subscription token file", () => {
+  it("a staged API successor rechecks its own reference and home rather than the predecessor's missing key", async () => {
+    const f = fixture({ label: "old-api", tokenFile: "/synthetic/missing-old-api", kind: "api-key" });
+    const selected = path.join(f.root, "next-account"); mkdirSync(selected);
+    const tokenFile = path.join(f.root, "new-key"); writeFileSync(tokenFile, SYNTHETIC, { mode: 0o600 });
+    f.db.exec("ALTER TABLE nodes ADD COLUMN account_home TEXT");
+    f.db.prepare("UPDATE nodes SET account_home = ? WHERE id = 'node'").run(path.join(f.root, "old-account"));
+    const prepared = await f.managed.prepare({ nodeId: "node", session: "staging", pane: "%2", generation: "next-gen", accountHome: selected,
+      accountToken: { label: "new-api", tokenFile, kind: "api-key" },
+      runtimeSwitch: { fromRuntime: "claude-code", session: "seat@rig", pane: "%1", generation: "gen" } }, "auto");
+    expect(prepared.configDir).toBe(selected);
+    expect(JSON.parse((await f.run(prepared.command([]))).stdout)).toEqual({ API: SYNTHETIC, TOKEN: "absent" });
+    writeFileSync(path.join(selected, "settings.json"), JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "synthetic-conflict" } }));
+    expect(() => prepared.command([])).toThrow(/credential settings could override/);
+  });
+
+  it("an API-key reference works inside a persisted account home without losing its allowed helper", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "integrated-account-api-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    const selected = path.join(root, "selected"); mkdirSync(selected);
+    writeFileSync(path.join(selected, "settings.json"), JSON.stringify({ apiKeyHelper: "synthetic-unused-helper" }));
+    const tokenFile = path.join(root, "api-key"); writeFileSync(tokenFile, SYNTHETIC, { mode: 0o600 });
+    const f = fixture({ label: "api", tokenFile, kind: "api-key" });
+    f.db.exec("ALTER TABLE nodes ADD COLUMN account_home TEXT");
+    f.db.prepare("UPDATE nodes SET account_home = ? WHERE id = 'node'").run(selected);
+    expect((await f.prepare()).configDir).toBe(selected);
+    expect(JSON.parse((await f.run(await f.command())).stdout)).toEqual({ API: SYNTHETIC, TOKEN: "absent" });
+  });
+
   it("an explicit account home ignores the old seat token and inherited provider credentials", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "isolated-claude-home-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
     const tokenFile = path.join(root, "old-token");

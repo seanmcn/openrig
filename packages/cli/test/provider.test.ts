@@ -82,6 +82,14 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
     asOf: "2026-08-03T12:00:00.000Z",
   };
 
+  it.each([{ selector: ["--account-home", "/accounts/selected"] }, { selector: ["--clear-account-home"] }])("does not silently ignore an API-key selector combined with $selector", async ({ selector }) => {
+    const before = seen.length;
+    const result = await run(["switch", "--seat", "dev-a@rig", ...(selector.includes("--clear-account-home") ? [] : ["--to-account", "api"]), "--api-key-file", "/synthetic/key",
+      ...selector, "--reason", "Integration test"], runningDeps(port));
+    expect(result.exitCode).toBe(1);
+    expect(seen.length).toBe(before);
+  });
+
   it("switches to a selected account home without sending credential values", async () => {
     const result = await run(["switch", "--seat", "dev-a@rig", "--to-account", "api-account", "--account-home", "/accounts/api",
       "--reason", "Plan limit", "--model", "gpt-5.5", "--json"], runningDeps(port));

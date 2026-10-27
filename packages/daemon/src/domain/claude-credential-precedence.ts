@@ -73,14 +73,14 @@ export function projectRootForLocalSettings(cwd: string): string | null {
 
 /** An isolated home may own an API helper, but project settings must not choose another account. A selected token also
  *  requires its home not to contain a helper or env that would outrank that token. Only names are reported. */
-export function isolatedClaudeAccountProblem(home: string, cwd: string, selectedToken: boolean): string | null {
+export function isolatedClaudeAccountProblem(home: string, cwd: string, selectedToken: boolean, apiKey = false): string | null {
   const root = projectRootForLocalSettings(cwd) ?? cwd;
   const files = [
     path.join(home, "settings.json"),
     ...new Set([root, cwd].flatMap(dir => [path.join(dir, ".claude/settings.json"), path.join(dir, ".claude/settings.local.json")])),
   ];
   for (const file of files) {
-    const check = settingsFileConflicts(file, "account or project", undefined, { storedLogin: true, isolatedAccountHome: true,
+    const check = settingsFileConflicts(file, "account or project", undefined, { storedLogin: !apiKey, isolatedAccountHome: true, apiKey,
       profileSelectorsOnly: file === path.join(home, "settings.json") && !selectedToken });
     if (check.conflicts.length || check.instead?.length || check.notChecked) {
       return "Claude credential settings could override the selected account home or token; remove those settings or make them readable before switching. Nothing changed.";

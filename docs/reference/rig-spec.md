@@ -632,6 +632,10 @@ before running seats there, or prepare/import a native auth profile separately. 
 an outgoing credential copy and report peers sharing the home. A native keyring or administrator
 policy can override `auth.json`; the report remains unverified until native account verification.
 
+Select or clear an account home in a separate operation: `--api-key-file` cannot be combined with
+`--account-home` or `--clear-account-home`. A credential switch inside an already selected home
+keeps that home.
+
 Both paths retain the conversation and launch settings, interrupt in-flight work, and report
 uncertain restarts without retrying. They do not move account homes or start a fresh conversation.
 The caller chooses subscription-first order and configures/enforces the API budget; this command
