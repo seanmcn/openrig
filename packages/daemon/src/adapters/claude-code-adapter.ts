@@ -259,6 +259,14 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     opts: { name: string; resumeToken?: string; forkSource?: import("../domain/runtime-adapter.js").ForkSource; freshInPlace?: boolean; beforeNativeDispatch?: () => boolean },
   ): Promise<HarnessLaunchResult> {
     binding = { ...binding };
+    if (binding.accountHome && (!this.claudeManagedLaunch || !this.seatLaunchEnvironment)) {
+      return { ok: false, error: "Isolated account-home launch support is unavailable; no agent started." };
+    }
+    const accountHome = binding.accountHome ?? this.claudeManagedLaunch?.accountHome?.(binding.nodeId);
+    if (accountHome) {
+      try { this.claudeManagedLaunch!.assertAccountHome(binding.nodeId, accountHome, binding.accountHome ? binding.accountToken ?? null : undefined); }
+      catch (error) { return { ok: false, error: (error as Error).message }; }
+    }
     this.autoLaunches.delete(binding.nodeId);
     opts = { ...opts, ...(opts.forkSource ? { forkSource: { ...opts.forkSource } } : {}) };
     if (!binding.tmuxSession) {
@@ -278,13 +286,15 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         if (!this.claudeManagedLaunch) await unresolvedClaudePermissionModes();
         managed = await this.claudeManagedLaunch!.prepare({ nodeId: binding.nodeId, cwd: binding.cwd,
           session: binding.tmuxSession, pane: binding.tmuxPane, generation: binding.launchGeneration,
+          ...(binding.accountHome ? { accountHome: binding.accountHome, accountToken: binding.accountToken ?? null } : {}),
           ...(binding.runtimeSwitchFrom ? { runtimeSwitch: { fromRuntime: binding.runtimeSwitchFrom.runtime, session: binding.runtimeSwitchFrom.session,
             pane: binding.runtimeSwitchFrom.pane, generation: binding.runtimeSwitchFrom.generation } } : {}) }, binding.permissionMode);
       } catch (error) { return { ok: false, error: (error as Error).message }; }
     }
     // A seat's own subscription token: the managed launch carries it; the classic launch gets its step in the staged
     // subshell. A launch that can't apply it still starts, and says so.
-    const seatToken = managed ? null : this.claudeManagedLaunch?.seatTokenLaunch?.(binding.nodeId) ?? null;
+    const seatToken = managed ? null : this.claudeManagedLaunch?.seatTokenLaunch?.(binding.nodeId,
+      binding.accountHome ? { ref: binding.accountToken ?? null, required: true } : {}) ?? null;
     const tokenWarnings: string[] = [...(managed?.warnings ?? seatToken?.warnings ?? [])];
     const session = binding.tmuxSession;
     const assertSelected = opts.beforeNativeDispatch ? () => {
@@ -298,7 +308,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         return assertSelected ? this.tmux.sendText(session, cmd, assertSelected) : this.tmux.sendText(session, cmd);
       }
       const staged = await this.seatLaunchEnvironment.command(session, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration,
-        runtime: this.runtime, ...(seatToken ? { claudeTokenStep: seatToken.step } : {}) });
+        runtime: this.runtime, ...(binding.accountHome ? { accountHome: binding.accountHome } : {}), ...(seatToken ? { claudeTokenStep: seatToken.step } : {}) });
       if (seatToken && !staged.includes(seatToken.step)) {
         tokenWarnings.push(this.claudeManagedLaunch?.tokenNotApplied?.(binding.nodeId, seatToken.ref, "the seat's pane shell can't run the token step") ?? claudeSeatTokenFallbackNotice(seatToken.ref, "the seat's pane shell can't run the token step"));
       }
@@ -447,7 +457,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   }
 
   /** Best-effort public seam for user-scope Claude bootstrap used by managed sessions. */
-  ensureManagedBootstrap(binding: { nodeId?: string; cwd?: string | null; tmuxSession?: string | null; permissionMode?: NodeBinding["permissionMode"] }): void {
+  ensureManagedBootstrap(binding: { nodeId?: string; cwd?: string | null; tmuxSession?: string | null; permissionMode?: NodeBinding["permissionMode"]; accountHome?: string }): void {
     this.provisionManagedBootstrap(binding);
   }
 
@@ -960,7 +970,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     return resolveConcreteHint(path, content, orientation);
   }
 
-  private provisionManagedBootstrap(binding: { nodeId?: string; cwd?: string | null; tmuxSession?: string | null; permissionMode?: NodeBinding["permissionMode"] }): void {
+  private provisionManagedBootstrap(binding: { nodeId?: string; cwd?: string | null; tmuxSession?: string | null; permissionMode?: NodeBinding["permissionMode"]; accountHome?: string }): void {
     // OPR.0.4.8.2 agnostic rip-out: provisionRigPermissions (C2) removed — OpenRig no longer
     // authors any config-file permission policy. Trust/onboarding (C3/C4) are neutral plumbing, kept.
     const home = this.fs.homedir ?? (typeof process !== "undefined" ? process.env.HOME : undefined);
@@ -973,7 +983,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     const failures: string[] = [];
     if (managed) {
       // The seat's own home when it declares one (member or rig `env:`), else the daemon's.
-      if (cwd) statePaths.push(managed.configPaths(cwd, binding.nodeId).statePath);
+      if (cwd) statePaths.push(managed.configPaths(cwd, binding.nodeId, binding.accountHome).statePath);
     } else {
       if (home) statePaths.push(nodePath.join(home, ".claude.json"));
       // A classic seat types `claude` into its pane's shell, which inherits the tmux server's
@@ -983,7 +993,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       // selected home untouched: a child that inherits the daemon's selection read neither.
       try {
         const selectedCwd = cwd ?? (binding.nodeId ? this.claudeManagedLaunch?.boundCwd(binding.nodeId) : undefined);
-        const selected = selectedCwd ? this.claudeManagedLaunch?.selectedStatePath(selectedCwd, binding.nodeId) : undefined;
+        const selected = selectedCwd ? this.claudeManagedLaunch?.selectedStatePath(selectedCwd, binding.nodeId, binding.accountHome) : undefined;
         if (selected && !statePaths.includes(selected)) statePaths.push(selected);
       } catch (err) {
         failures.push((err as Error).message);

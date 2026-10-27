@@ -1,3 +1,4 @@
+import { seatAccountHome } from "./domain/seat-runtime-home.js";
 import { reportRestoreDeliveryFailure } from "./domain/compaction-restore-notice.js";
 import { ClaudeTokenUsage, claudeTokenUsageReader } from "./domain/provider/claude-token-usage.js";
 import type { ClaudeTokenIdentity } from "./domain/provider/provider-types.js";
@@ -687,7 +688,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     },
   });
   const { SeatLaunchEnvironment } = await import("./domain/seat-launch-environment.js");
-  const seatLaunchEnvironment = new SeatLaunchEnvironment(tmuxAdapter, launchSessionEnv, process.cwd(), undefined, configuredCodexHome);
+  const seatLaunchEnvironment = new SeatLaunchEnvironment(tmuxAdapter, launchSessionEnv, process.cwd(), undefined, configuredCodexHome,
+    (nodeId, runtime) => seatAccountHome(db, nodeId, runtime));
   const nodeLauncher = new NodeLauncher({
     db,
     rigRepo,

@@ -1,3 +1,4 @@
+import { accountHomePlanMatches } from "../lib/account-home-switch.js";
 import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { DaemonClient, DaemonTimeoutError, terminalAuthHeaders } from "../client.js";
@@ -919,6 +920,9 @@ resume/successor launch reads it at call time. Examples:
     .option("--model <id>", "Target model; otherwise the seat's agent spec for the target, else the target's default")
     .option("--effort <level>", "Target effort, the target runtime's own level (not translated)")
     .option("--codex-config-profile <name>", "Codex configuration profile for a Codex successor")
+    .option("--account-home <path>", "Isolated target CODEX_HOME or CLAUDE_CONFIG_DIR; also permits a fresh successor on the same runtime")
+    .option("--token-file <path>", "With a Claude account home, its required subscription token reference")
+    .option("--account-label <label>", "With --token-file, the selected account's label")
     .option("--permission-mode <mode>", "Target native permission choice; default: inherit the seat's member and rig policy")
     .option("--confirm-timeout <seconds>", "How long the successor has to confirm the handover (default 180)")
     .option("--dry-run", "Show the plan (settings, what is cleared, costs) without changing anything")
@@ -948,7 +952,7 @@ A seat can switch itself (its CLI may end when it retires; the daemon finishes).
   rig seat status dev-impl@my-rig            # an open or interrupted switch shows here
   rig seat set-runtime dev-impl@my-rig --recover`)
     .action(async (seat: string, opts: { runtime?: string; reason?: string; model?: string; effort?: string; codexConfigProfile?: string;
-      permissionMode?: string; confirmTimeout?: string; dryRun?: boolean; confirm?: string; note?: string; recover?: boolean; json?: boolean }) => {
+      permissionMode?: string; accountHome?: string; tokenFile?: string; accountLabel?: string; confirmTimeout?: string; dryRun?: boolean; confirm?: string; note?: string; recover?: boolean; json?: boolean }) => {
       const modes = [opts.confirm !== undefined, opts.recover === true, opts.runtime !== undefined].filter(Boolean).length;
       if (modes !== 1) {
         console.error("Pass exactly one of --runtime <runtime> (with --reason), --confirm <switch-id> (with --note), or --recover.");
@@ -980,19 +984,41 @@ A seat can switch itself (its CLI may end when it retires; the daemon finishes).
       const client = deps.clientFactory(getDaemonUrl(daemon));
       const base = `/api/seat/set-runtime/${encodeURIComponent(seat)}`;
       let res;
+      let switchRequested = false;
       try {
         res = opts.confirm !== undefined
           ? await client.post<Record<string, unknown>>(`${base}/confirm`, { switchId: opts.confirm, note: opts.note })
           : opts.recover
             ? await client.post<Record<string, unknown>>(`${base}/recover`, {}, { timeoutMs: 60_000 })
-            : await client.post<Record<string, unknown>>(base, {
-              runtime: opts.runtime, reason: opts.reason, dryRun: opts.dryRun === true,
-              ...(opts.model !== undefined ? { model: opts.model } : {}), ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
-              ...(opts.codexConfigProfile !== undefined ? { codexConfigProfile: opts.codexConfigProfile } : {}),
-              ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
-              ...(confirmTimeoutSeconds !== undefined ? { confirmTimeoutSeconds } : {}),
-            }, { timeoutMs: opts.dryRun ? 30_000 : ((confirmTimeoutSeconds ?? 180) + 120) * 1000 });
+            : await (async () => {
+              const body = {
+                runtime: opts.runtime, reason: opts.reason, dryRun: opts.dryRun === true,
+                ...(opts.model !== undefined ? { model: opts.model } : {}), ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
+                ...(opts.codexConfigProfile !== undefined ? { codexConfigProfile: opts.codexConfigProfile } : {}),
+                ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
+                ...(opts.accountHome !== undefined ? { accountHome: opts.accountHome } : {}),
+                ...(opts.tokenFile !== undefined ? { tokenFile: opts.tokenFile, accountLabel: opts.accountLabel ?? "selected-account" } : {}),
+                ...(confirmTimeoutSeconds !== undefined ? { confirmTimeoutSeconds } : {}),
+              };
+              if (opts.accountHome !== undefined) {
+                const preview = await client.post<Record<string, unknown>>(base, { ...body, dryRun: true }, { timeoutMs: 30_000 });
+                const token = opts.tokenFile ? { label: opts.accountLabel ?? "selected-account", tokenFile: opts.tokenFile } : undefined;
+                if (!accountHomePlanMatches(preview.data, opts.accountHome, token)) {
+                  return { status: 409, data: { ok: false, code: "account_home_switch_unavailable",
+                    message: preview.data["message"] ?? "The daemon did not acknowledge the selected account home and token. No switch was requested." } };
+                }
+                if (opts.dryRun) return preview;
+              }
+              switchRequested = true;
+              return client.post<Record<string, unknown>>(base, body,
+                { timeoutMs: opts.dryRun ? 30_000 : ((confirmTimeoutSeconds ?? 180) + 120) * 1000 });
+            })();
       } catch (err) {
+        if (opts.accountHome !== undefined && !switchRequested) {
+          const refusal = { ok: false, code: "account_home_preflight_failed", message: "The read-only account-home preflight failed; no switch was requested." };
+          if (opts.json) console.log(JSON.stringify(refusal)); else console.error(refusal.message);
+          process.exitCode = 1; return;
+        }
         if (!(err instanceof DaemonTimeoutError) || opts.dryRun) throw err;
         const unknown = { ok: false as const, code: "runtime_switch_outcome_unknown", status: "unknown",
           message: "The CLI stopped waiting; the daemon may still be switching the seat.",

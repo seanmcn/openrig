@@ -28,7 +28,7 @@ export interface CredentialPrecedence {
 /** One settings file's `apiKeyHelper` and outranking `env` entries, and with `storedLogin` its `env` block's
  *  `CLAUDE_CODE_OAUTH_TOKEN`. An absent file has none. */
 export function settingsFileConflicts(file: string, scope: string, read: (file: string) => string = (f) => fs.readFileSync(f, "utf8"),
-  opts: { storedLogin?: boolean } = {}): { conflicts: CredentialConflict[]; instead?: CredentialConflict[]; checked?: string; notChecked?: string } {
+  opts: { storedLogin?: boolean; isolatedAccountHome?: boolean } = {}): { conflicts: CredentialConflict[]; instead?: CredentialConflict[]; checked?: string; notChecked?: string } {
   let text: string;
   try { text = read(file); } catch (err) {
     return (err as NodeJS.ErrnoException).code === "ENOENT"
@@ -41,7 +41,7 @@ export function settingsFileConflicts(file: string, scope: string, read: (file: 
   const conflicts: CredentialConflict[] = [];
   if (settings?.apiKeyHelper !== undefined) conflicts.push({ name: "apiKeyHelper", source: `${scope} settings ${file}`, remedy });
   const env = settings?.env && typeof settings.env === "object" ? settings.env as Record<string, unknown> : {};
-  for (const name of OUTRANKING_TOKEN_ENV) {
+  for (const name of [...OUTRANKING_TOKEN_ENV, ...(opts.isolatedAccountHome ? ["ANTHROPIC_BASE_URL"] : [])]) {
     if (env[name] !== undefined) conflicts.push({ name, source: `the env block of ${scope} settings ${file}`, remedy });
   }
   const instead = opts.storedLogin && env.CLAUDE_CODE_OAUTH_TOKEN !== undefined
@@ -64,4 +64,21 @@ export function projectRootForLocalSettings(cwd: string): string | null {
     }
     if (path.dirname(dir) === dir) return null;
   }
+}
+
+/** An isolated home may own an API helper, but project settings must not choose another account. A selected token also
+ *  requires its home not to contain a helper or env that would outrank that token. Only names are reported. */
+export function isolatedClaudeAccountProblem(home: string, cwd: string, selectedToken: boolean): string | null {
+  const root = projectRootForLocalSettings(cwd) ?? cwd;
+  const files = [
+    ...(selectedToken ? [path.join(home, "settings.json")] : []),
+    ...new Set([root, cwd].flatMap(dir => [path.join(dir, ".claude/settings.json"), path.join(dir, ".claude/settings.local.json")])),
+  ];
+  for (const file of files) {
+    const check = settingsFileConflicts(file, "account or project", undefined, { storedLogin: true, isolatedAccountHome: true });
+    if (check.conflicts.length || check.instead?.length || check.notChecked) {
+      return "Claude credential settings could override the selected account home or token; remove those settings or make them readable before switching. Nothing changed.";
+    }
+  }
+  return null;
 }
