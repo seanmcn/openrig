@@ -279,28 +279,28 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
 
   /** The home a seat's Codex uses: its own from its member or rig `env:`, else the daemon's explicit CODEX_HOME. Undefined
    *  keeps the legacy OS/PID home behavior. */
-  private homeFor(binding: { nodeId?: string } | undefined): string | undefined {
+  private homeFor(binding: { nodeId?: string; accountHome?: string } | undefined): string | undefined {
     return this.ownHome(binding) ?? this.codexHome;
   }
 
   /** Only the seat's own CODEX_HOME, undefined when it declares none. Probes and readers get it as an extra argument
    *  only when it's set, so a seat without one calls them exactly as before. */
-  private ownHome(binding: { nodeId?: string } | undefined): string | undefined {
-    return binding?.nodeId ? this.seatHome?.(binding.nodeId) : undefined;
+  private ownHome(binding: { nodeId?: string; accountHome?: string } | undefined): string | undefined {
+    return binding?.accountHome ?? (binding?.nodeId ? this.seatHome?.(binding.nodeId) : undefined);
   }
 
-  private ownHomeCommandOpt(binding: { nodeId?: string }): { codexHome?: string } {
+  private ownHomeCommandOpt(binding: { nodeId?: string; accountHome?: string }): { codexHome?: string } {
     const own = this.ownHome(binding);
     return own ? { codexHome: own } : {};
   }
 
-  private ownHomeOpt(binding: { nodeId?: string }): { home?: string } {
+  private ownHomeOpt(binding: { nodeId?: string; accountHome?: string }): { home?: string } {
     const own = this.ownHome(binding);
     return own ? { home: own } : {};
   }
 
   /** A thread id read for this seat's process, in the seat's own home when it declares one. */
-  private readThreadIdForSeat(binding: { nodeId?: string }, pid: number, identity?: string): Promise<string | undefined> | string | undefined {
+  private readThreadIdForSeat(binding: { nodeId?: string; accountHome?: string }, pid: number, identity?: string): Promise<string | undefined> | string | undefined {
     const own = this.ownHome(binding);
     if (own) return this.readThreadIdByPid(pid, identity, own);
     return identity === undefined ? this.readThreadIdByPid(pid) : this.readThreadIdByPid(pid, identity);
@@ -842,6 +842,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     binding: NodeBinding,
     opts: { name: string; resumeToken?: string; forkSource?: import("../domain/runtime-adapter.js").ForkSource },
   ): Promise<HarnessLaunchResult> {
+    if (binding.accountHome && !this.seatLaunchEnvironment) {
+      return { ok: false, error: "Isolated account-home launch support is unavailable; no agent started." };
+    }
     if (!binding.tmuxSession) {
       return { ok: false, error: "No tmux session bound — cannot launch Codex harness" };
     }
@@ -1071,7 +1074,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
 
   private async seatCommand(binding: NodeBinding, cmd: string): Promise<string> {
     return this.seatLaunchEnvironment
-      ? await this.seatLaunchEnvironment.command(binding.tmuxSession!, cmd, { codexCwd: binding.cwd, nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime, ...this.ownHomeCommandOpt(binding) })
+      ? await this.seatLaunchEnvironment.command(binding.tmuxSession!, cmd, { codexCwd: binding.cwd, nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime, ...(binding.accountHome ? { accountHome: binding.accountHome } : {}), ...this.ownHomeCommandOpt(binding) })
       : this.launchCommand(cmd, this.homeFor(binding));
   }
 

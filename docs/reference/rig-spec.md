@@ -455,6 +455,53 @@ only the stored `env:`. Seats may share a home. Live usage refresh (`rig provide
 daemon's own logins; reading each seat's home would need a native reader per home. OpenRig doesn't copy logins or conversation history between homes, so a conversation saved under a seat's earlier home
 doesn't resume after the seat moves to another one. The `openrig-user` skill has the setup steps.
 
+**Switching to an isolated account home.** A live Codex or Claude Code seat can select a different native account
+home without being removed from its rig:
+
+```sh
+rig provider switch --seat dev-impl@my-rig --to-account api-account \
+  --account-home /home/me/accounts/codex-api --model gpt-5.5 --reason "Use the API budget" --dry-run
+rig seat set-runtime dev-impl@my-rig --runtime claude-code \
+  --account-home /home/me/accounts/claude-api --model claude-sonnet-4-6 --reason "Codex limit"
+```
+
+The directory must already exist and hold the selected runtime's own login or API settings. The caller chooses the
+account and budget; OpenRig does not choose or create credentials. `--account-home` selects `CODEX_HOME` for Codex or
+`CLAUDE_CONFIG_DIR` for Claude Code, including before the successor starts. It also permits a successor on the same
+runtime. Unlike the existing subscription-login switch, this mode starts a **fresh conversation with a handover**.
+The successor confirms before its home, runtime, model, profile and permission selection commit together. The seat's
+address, edges, queue rows and claims remain. A pre-cutover refusal leaves the predecessor's configuration unchanged.
+
+For a Claude plan authenticated with `setup-token`, select its token-file reference with its home:
+
+```sh
+rig provider switch --seat dev-impl@my-rig --to-account claude-plan \
+  --account-home /home/me/accounts/claude-plan --token-file /home/me/credentials/claude-plan-token \
+  --reason "The plan reset"
+# Across runtimes, use set-runtime with --account-home, --token-file and --account-label.
+```
+
+Only the token's label and file path enter OpenRig. Its launch reads the token; if the required file becomes unusable,
+no agent starts. An API-home selection without `--token-file` clears an older seat token reference at commit. Its own
+API helper may stay in that home's user settings. A selected plan token refuses a home whose API helper or credential
+environment would outrank it; either mode refuses project credential overrides. OpenRig does not edit those settings.
+
+The selected home persists across managed launches and restores. Those launches exclude inherited Claude/OpenAI
+provider credentials and routing environment, so daemon or shell credentials cannot shadow the selected home. An
+unreadable stored selection or a shell unable to enforce isolation fails closed. Existing home-less launches and
+subscription-login switches keep their behavior; a Claude seat using account-home mode selects later accounts through
+that mode too. User-managed provider settings can still affect authentication: after a real tool turn, check the
+runtime's account/billing identity without printing tokens or its environment. A configured home is not verification
+of the account a running process used.
+
+Before downgrading to a version without account-home switching, stop the managed seats and reselect their accounts
+using that version's supported setup before resuming. Older readers ignore the new selection and may otherwise launch
+on inherited or default credentials; rolling back only the binary does not preserve the selected billing account.
+
+The imported team file is not rewritten, and exported/reimported teams do not carry this native account-home isolation
+mode. Configure a new rig explicitly. An interrupted switch is inspected with `rig seat status`; use its printed
+recovery command and do not launch another switch while the outcome is unknown.
+
 **Do not put secrets in `env:` or `--env`.** The values are not secret, and nothing here encrypts or hides them (see #306):
 
 - Spec values are stored in OpenRig's database and in rig snapshots, and `rig export` and bundles copy them, so a secret put there by mistake travels with the rig.

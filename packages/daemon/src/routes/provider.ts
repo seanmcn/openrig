@@ -1,3 +1,5 @@
+import { OCCUPANT_GENERATION_HEADER, runtimeSwitchCustodyRefusal } from "./runtime-switch-custody.js";
+import { SeatStatusService } from "../domain/seat-status-service.js";
 import fs from "node:fs";
 import path from "node:path";
 import { Hono, type Context } from "hono";
@@ -14,8 +16,8 @@ import { readClaudeSeatTokenRef } from "../domain/claude-seat-token.js";
 import type { ProviderKind } from "../domain/provider/provider-types.js";
 import { checkMoveReport, credentialRefusal, findCredential, MOVE_REPORT_TAG, readMoveReport, renderMoveReport, type MoveReport } from "../domain/provider/subscription-move-report.js";
 import { QueueRepositoryError, type QueueRepository } from "../domain/queue-repository.js";
-import { requireSenderIdentity, resolveRecordedProvenance } from "./require-sender-identity.js";
-import { seatLifecycleService } from "./seat.js";
+import { requireSenderIdentity, resolveRecordedProvenance, transportSenderSession } from "./require-sender-identity.js";
+import { seatLifecycleService, runtimeSwitchService } from "./seat.js";
 import {
   readUsageAcrossHosts,
   selectUsageHosts,
@@ -318,8 +320,6 @@ export function providerRoutes(opts: ProviderRoutesOptions = {}): Hono {
   });
 
   router.post("/switch", async (c) => {
-    const svc = svcOf(c);
-    if (!svc) return c.json({ error: "provider_service_unavailable" }, unavailable);
     let raw: unknown;
     try {
       raw = await c.req.json();
@@ -340,10 +340,34 @@ export function providerRoutes(opts: ProviderRoutesOptions = {}): Hono {
     if (typeof forceUnsafe !== "boolean") {
       return c.json({ error: "forceUnsafe must be a boolean" }, 400);
     }
+    if (body["accountHome"] !== undefined) {
+      if ((body["tokenFile"] !== undefined && typeof body["tokenFile"] !== "string") || typeof body["accountHome"] !== "string" || typeof body["reason"] !== "string" ||
+          (body["model"] !== undefined && typeof body["model"] !== "string") ||
+          (body["codexConfigProfile"] !== undefined && typeof body["codexConfigProfile"] !== "string") ||
+          (body["dryRun"] !== undefined && typeof body["dryRun"] !== "boolean")) {
+        return c.json({ ok: false, code: "invalid_runtime_settings", message: "Account-home switching needs a path and reason, with optional model/profile and a Claude token-file reference." }, 400);
+      }
+      const rigRepo = c.get("rigRepo" as never) as RigRepository;
+      const custody = runtimeSwitchCustodyRefusal(rigRepo.db, transportSenderSession(c), c.req.header(OCCUPANT_GENERATION_HEADER));
+      if (custody) return c.json(custody.body, custody.status);
+      const resolved = new SeatStatusService({ rigRepo }).getStatus(seat);
+      if (!resolved.ok) return c.json(resolved, 404);
+      const result = await runtimeSwitchService(c).setRuntime({ seatRef: seat, runtime: resolved.status.runtime ?? "",
+        accountHome: body["accountHome"], reason: body["reason"], dryRun: body["dryRun"] === true,
+        ...(typeof body["tokenFile"] === "string" ? { accountToken: { label: toAccount, tokenFile: body["tokenFile"] } } : {}),
+        requestedBy: transportSenderSession(c) ?? null,
+        ...(typeof body["model"] === "string" ? { model: body["model"] } : {}),
+        ...(typeof body["codexConfigProfile"] === "string" ? { codexConfigProfile: body["codexConfigProfile"] } : {}),
+      });
+      return c.json(result, result.ok ? "recoveryPending" in result && result.recoveryPending ? 202 : 200
+        : result.code === "invalid_runtime_settings" ? 400 : 409);
+    }
     const tokenFile = body["tokenFile"];
     if (tokenFile !== undefined && tokenFile !== null && typeof tokenFile !== "string") {
       return c.json({ error: "tokenFile must be a path, or null for the stored login" }, 400);
     }
+    const svc = svcOf(c);
+    if (!svc) return c.json({ error: "provider_service_unavailable" }, unavailable);
     // Business outcome (incl. failed_safely / rebind_in_progress) is an explicit 200 payload.
     return c.json(await svc.switchAccount({ seat, toAccount, forceUnsafe, ...(tokenFile !== undefined ? { tokenFile } : {}) },
       seatRestartOf(c), claudeSeatOf(c)), 200);

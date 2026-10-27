@@ -45,13 +45,79 @@ printf '{"TOKEN":"%s"}' "\${CLAUDE_CODE_OAUTH_TOKEN-absent}"
   const events: unknown[] = [];
   managed.onTokenNotApplied = (event) => { events.push(event); };
   const prepare = () => managed.prepare({ nodeId: "node", session: "seat@rig", pane: "%1" }, "auto");
-  const command = async () => (await prepare()).command(["--permission-mode", "auto"]);
+  const command = async (accountHome?: string, accountToken?: { label: string; tokenFile: string }) => (await managed.prepare({ nodeId: "node", session: "seat@rig", pane: "%1", ...(accountHome ? { accountHome, accountToken: accountToken ?? null } : {}) }, "auto")).command(["--permission-mode", "auto"]);
   // `pane` is what the pane shell itself exports.
   const run = (cmd: string, pane: Record<string, string> = {}) => exec("/bin/sh", ["-c", cmd], { env: { PATH: "/usr/bin:/bin", ...pane }, timeout: 5000 });
-  return { root, command, prepare, run, events };
+  return { root, command, prepare, run, events, db, managed };
 }
 
 describe.skipIf(process.platform === "win32")("a Claude seat's own subscription token file", () => {
+  it("an explicit account home ignores the old seat token and inherited provider credentials", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "isolated-claude-home-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    const tokenFile = path.join(root, "old-token");
+    writeFileSync(tokenFile, SYNTHETIC, { mode: 0o600 });
+    const f = fixture({ label: "old-account", tokenFile }, { CLAUDE_CODE_OAUTH_TOKEN: "old-fixture", ANTHROPIC_API_KEY: "old-api-fixture" });
+    const selected = path.join(root, "selected-account"); mkdirSync(selected);
+    writeFileSync(path.join(f.root, "bin", "claude"), `#!/bin/sh
+if [ "$1" = --help ]; then printf '%s\\n' '--permission-mode <mode> (choices: "auto", "default")'; exit 0; fi
+printf '%s|%s|%s' "$CLAUDE_CONFIG_DIR" "\${CLAUDE_CODE_OAUTH_TOKEN+set}" "\${ANTHROPIC_API_KEY+set}"
+`);
+    const command = await f.command(selected);
+    expect(command).not.toContain(tokenFile);
+    expect(command).not.toContain(SYNTHETIC);
+    const result = await f.run(command, { CLAUDE_CODE_OAUTH_TOKEN: "pane-old-fixture", ANTHROPIC_API_KEY: "pane-old-api-fixture" });
+    expect(result.stdout).toBe(`${selected}||`);
+    expect(f.events).toEqual([]);
+  });
+
+  it("an account-home plan uses its explicit setup-token file and fails closed if that file disappears", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "selected-claude-plan-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    const tokenFile = path.join(root, "plan-token"); writeFileSync(tokenFile, SYNTHETIC, { mode: 0o600 });
+    const accountHome = path.join(root, "plan-home"); mkdirSync(accountHome);
+    const f = fixture(undefined, { CLAUDE_CODE_OAUTH_TOKEN: "unselected-fixture" });
+    const command = await f.command(accountHome, { label: "plan", tokenFile });
+    expect(command).not.toContain(SYNTHETIC);
+    expect(JSON.parse((await f.run(command)).stdout)).toEqual({ TOKEN: SYNTHETIC });
+    rmSync(tokenFile);
+    await expect(f.run(command)).rejects.toMatchObject({ code: 1, stdout: "" });
+  });
+
+  it("a later managed launch restores the stored account home and its setup-token reference", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "stored-claude-plan-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    const tokenFile = path.join(root, "plan-token"); writeFileSync(tokenFile, SYNTHETIC, { mode: 0o600 });
+    const selected = path.join(root, "plan-home"); mkdirSync(selected);
+    const f = fixture({ label: "plan", tokenFile }, { CLAUDE_CODE_OAUTH_TOKEN: "wrong-daemon-fixture", ANTHROPIC_API_KEY: "wrong-api-fixture" });
+    f.db.exec("ALTER TABLE nodes ADD COLUMN account_home TEXT");
+    f.db.prepare("UPDATE nodes SET account_home = ? WHERE id = 'node'").run(selected);
+    expect((await f.prepare()).configDir).toBe(selected);
+    const command = await f.command();
+    expect(command).not.toContain(SYNTHETIC);
+    expect(JSON.parse((await f.run(command)).stdout)).toEqual({ TOKEN: SYNTHETIC });
+  });
+
+  it("refuses a selected plan home whose API helper would outrank its explicit token, including edits after preparation", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "conflicting-claude-plan-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    const tokenFile = path.join(root, "plan-token"); writeFileSync(tokenFile, SYNTHETIC, { mode: 0o600 });
+    const selected = path.join(root, "plan-home"); mkdirSync(selected);
+    const f = fixture({ label: "plan", tokenFile });
+    f.db.exec("ALTER TABLE nodes ADD COLUMN account_home TEXT");
+    f.db.prepare("UPDATE nodes SET account_home = ? WHERE id = 'node'").run(selected);
+    const prepared = await f.prepare();
+    writeFileSync(path.join(selected, "settings.json"), JSON.stringify({ apiKeyHelper: "printf synthetic-api-helper" }));
+    expect(() => prepared.command(["--permission-mode", "auto"])).toThrow(/credential settings could override/);
+    await expect(f.command()).rejects.toThrow(/credential settings could override/);
+  });
+
+  it("an API home without a selected token keeps its intended user-scope API helper", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "selected-claude-api-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    const selected = path.join(root, "api-home"); mkdirSync(selected);
+    writeFileSync(path.join(selected, "settings.json"), JSON.stringify({ apiKeyHelper: "printf synthetic-api-helper" }));
+    const f = fixture(undefined, { CLAUDE_CODE_OAUTH_TOKEN: "wrong-daemon-fixture" });
+    const command = await f.command(selected);
+    expect(JSON.parse((await f.run(command)).stdout)).toEqual({ TOKEN: "absent" });
+    expect((await f.managed.prepare({ nodeId: "node", session: "seat@rig", pane: "%1", accountHome: selected, accountToken: null }, "auto")).configDir).toBe(selected);
+  });
+
   it("reaches only that seat's Claude process; the value never enters the launch command", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "claude-seat-token-file-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
     const tokenFile = path.join(root, "claude-work.token");

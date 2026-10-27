@@ -67,6 +67,21 @@ const plan = {
 describe("rig seat set-runtime", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("an older daemon cannot silently ignore the chosen home and execute a switch", async () => {
+    const { calls, exitCode } = await run({ status: 200, data: plan }, ["dev.impl@my-rig", "--runtime", "claude-code",
+      "--account-home", "/accounts/claude-api", "--reason", "Plan limit", "--json"]);
+    expect(exitCode).toBe(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.body).toMatchObject({ dryRun: true });
+  });
+
+  it("selects the successor's account home in the same runtime-switch request", async () => {
+    const { calls, exitCode } = await run({ status: 200, data: { ...plan, accountHome: "/accounts/claude-api" } }, ["dev.impl@my-rig", "--runtime", "claude-code",
+      "--account-home", "/accounts/claude-api", "--reason", "Use API budget", "--json", "--dry-run"]);
+    expect(calls[0]!.body).toMatchObject({ runtime: "claude-code", accountHome: "/accounts/claude-api", reason: "Use API budget", dryRun: true });
+    expect(exitCode).toBeFalsy();
+  });
+
   it("a dry run shows the target's settings and where each comes from, what is cleared, and the costs", async () => {
     const { calls, logs, exitCode } = await run({ status: 200, data: plan }, ["dev.impl@my-rig", "--runtime", "claude-code", "--reason", "Codex limit", "--dry-run"]);
     expect(calls[0]).toMatchObject({ path: "/api/seat/set-runtime/dev.impl%40my-rig", body: { runtime: "claude-code", reason: "Codex limit", dryRun: true } });

@@ -7,7 +7,7 @@ import { ulid } from "ulid";
 import { deriveComposeProjectName } from "./compose-project-name.js";
 import type { ClaudeManagedBlockFile } from "./managed-blocks.js";
 import { mergeSeatEnv, parseStoredSeatEnv, type SeatEnv } from "./seat-env.js";
-import { withoutIgnoredRuntimeHomes } from "./seat-runtime-home.js";
+import { seatAccountHome, RUNTIME_HOME_VAR, withoutIgnoredRuntimeHomes } from "./seat-runtime-home.js";
 import { parseClaudeSeatTokenRef, type ClaudeSeatTokenRef } from "./claude-seat-token.js";
 import type {
   Rig,
@@ -426,7 +426,12 @@ export class RigRepository {
     const row = this.db.prepare("SELECT rig_id, env_json FROM nodes WHERE id = ?")
       .get(nodeId) as { rig_id: string; env_json: string | null } | undefined;
     if (!row) return {};
-    return withoutIgnoredRuntimeHomes(mergeSeatEnv(this.getRigEnv(row.rig_id), parseStoredSeatEnv(row.env_json)));
+    const env = withoutIgnoredRuntimeHomes(mergeSeatEnv(this.getRigEnv(row.rig_id), parseStoredSeatEnv(row.env_json)));
+    for (const runtime of ["codex", "claude-code"] as const) {
+      const accountHome = seatAccountHome(this.db, nodeId, runtime);
+      if (accountHome) env[RUNTIME_HOME_VAR[runtime]] = accountHome;
+    }
+    return env;
   }
 
   /** OPR.0.4.8.3 Seam B — persist a rig's attached permission_policy REF (builtin:<name> or a
@@ -1056,6 +1061,7 @@ export class RigRepository {
       effortChoice: row.effort_choice ?? null,
       codexConfigProfile: row.codex_config_profile ?? null,
       claudeTokenRef: parseClaudeSeatTokenRef(row.claude_token_ref),
+      ...(row.account_home ? { accountHome: row.account_home } : {}),
       permissionPolicy: row.permission_policy ?? null,
       env: parseStoredSeatEnv(row.env_json),
       cwd: row.cwd,
@@ -1151,6 +1157,7 @@ interface NodeRow {
   claude_token_ref?: string | null;
   permission_policy?: string | null;
   env_json?: string | null;
+  account_home?: string | null;
   cwd: string | null;
   surface_hint: string | null;
   workspace: string | null;

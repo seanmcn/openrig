@@ -82,6 +82,22 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
     asOf: "2026-08-03T12:00:00.000Z",
   };
 
+  it("switches to a selected account home without sending credential values", async () => {
+    const result = await run(["switch", "--seat", "dev-a@rig", "--to-account", "api-account", "--account-home", "/accounts/api",
+      "--reason", "Plan limit", "--model", "gpt-5.5", "--json"], runningDeps(port));
+    expect(result.exitCode).toBeFalsy();
+    expect(JSON.parse(seen.at(-1)!.body)).toEqual({ seat: "dev-a@rig", toAccount: "api-account", accountHome: "/accounts/api",
+      reason: "Plan limit", model: "gpt-5.5", dryRun: false });
+    expect(JSON.parse(result.logs.at(-1)!)).toMatchObject({ ok: true });
+  });
+
+  it("requires a reason before starting an account-home switch", async () => {
+    const before = seen.length;
+    const result = await run(["switch", "--seat", "dev-a@rig", "--to-account", "api-account", "--account-home", "/accounts/api"], runningDeps(port));
+    expect(result.exitCode).toBe(1);
+    expect(seen.length).toBe(before);
+  });
+
   beforeAll(async () => {
     server = http.createServer(async (req, res) => {
       let body = "";
@@ -89,6 +105,12 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
       seen.push({ url: req.url ?? "", method: req.method ?? "", body });
       const send = (code: number, obj: unknown) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
       const path = (req.url ?? "").split("?")[0];
+      if (path?.startsWith("/api/seat/status/")) return send(200, { ok: true, status: { runtime: "codex" } });
+      if (path?.startsWith("/api/seat/set-runtime/")) {
+        const request = JSON.parse(body);
+        return send(200, { ok: true, dryRun: true, accountHome: request.accountHome,
+          ...(request.tokenFile ? { accountToken: { label: request.accountLabel, tokenFile: request.tokenFile } } : {}) });
+      }
       if (path === "/api/provider/status") return send(200, FOUR_BLOCK);
       if (path === "/api/provider/accounts") {
         if ((req.url ?? "").includes("provider=bad")) return send(404, { error: "unknown provider: bad" });
@@ -99,6 +121,7 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
       if (path === "/api/provider/precheck") return send(200, { safe: false, reasons: ["target_needs_reauth"] });
       if (path === "/api/provider/switch") {
         if (body.includes("bad")) return send(400, { error: "invalid target account" });
+        if (JSON.parse(body).accountHome) return send(200, { ok: true, changed: true, recoveryPending: false });
         return send(200, { outcome: "succeeded" });
       }
       return send(500, { error: "not found" });

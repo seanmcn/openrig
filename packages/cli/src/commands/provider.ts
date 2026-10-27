@@ -1,3 +1,4 @@
+import { accountHomePlanMatches } from "../lib/account-home-switch.js";
 import fs from "node:fs";
 import { Command } from "commander";
 import { DaemonClient, DaemonTimeoutError } from "../client.js";
@@ -547,6 +548,11 @@ export function providerCommand(depsOverride?: StatusDeps): Command {
     .option("--token-file <path>", "Claude: the absolute path of a 0600 file holding the seat's own subscription token; it's read only as Claude starts")
     .option("--stored-login", "Claude: move the seat back to its config dir's stored login")
     .option("--force-unsafe", "Kept for scripts; a seat's checks can't be overridden, since each means nothing safe to restart or no such login")
+    .option("--account-home <path>", "Move to an isolated native account home with a fresh successor and handover; no shared login is changed")
+    .option("--reason <text>", "Required with --account-home")
+    .option("--model <id>", "With --account-home, the successor's model")
+    .option("--codex-config-profile <name>", "With --account-home, the successor's Codex profile")
+    .option("--dry-run", "With --account-home, show the plan without changing anything")
     .option("--json", "Output as parseable JSON")
     .addHelpText("after", `
 The daemon plans the seat's in-place restart first (rig seat restart --plan), so a refusal changes nothing. It then saves the
@@ -579,7 +585,7 @@ environment writes it into the transcript. A token-authenticated seat can make m
 connectors or Remote Control; its local MCP servers still work. --stored-login moves it back to the config dir's stored login;
 a CLAUDE_CODE_OAUTH_TOKEN the seat still receives outranks that login, and the report says which token it will use. Claude's
 /status shows token auth with no account email, so the label is yours, not an observed account.`)
-    .action(async (opts: AccountOpts & { seat: string; forceUnsafe?: boolean; json?: boolean }) => {
+    .action(async (opts: AccountOpts & { seat: string; forceUnsafe?: boolean; json?: boolean; accountHome?: string; reason?: string; model?: string; codexConfigProfile?: string; dryRun?: boolean }) => {
       const target = targetAccount(opts);
       if (!target) {
         console.error("Name the account: --to-account <name> (with --token-file <path> for a Claude seat), or --stored-login for a Claude seat.");
@@ -588,6 +594,66 @@ a CLAUDE_CODE_OAUTH_TOKEN the seat still receives outranks that login, and the r
       }
       const client = await getClient(getDeps());
       if (!client) {
+        process.exitCode = 1;
+        return;
+      }
+      if (opts.accountHome !== undefined) {
+        if (!opts.reason?.trim() || opts.storedLogin) {
+          console.error("With --account-home pass --reason and --to-account, without --stored-login. A Claude subscription may also name --token-file.");
+          process.exitCode = 1;
+          return;
+        }
+        let preview: { status: number; data: Record<string, unknown> };
+        try {
+          const status = await client.get<{ ok?: boolean; status?: { runtime?: string } }>(`/api/seat/status/${encodeURIComponent(opts.seat)}`);
+          const runtime = status.data.status?.runtime;
+          if (status.status >= 400 || (runtime !== "codex" && runtime !== "claude-code")) {
+          const refusal = { ok: false, code: "account_home_preflight_failed", message: "The seat runtime could not be read; no switch was requested." };
+          if (opts.json) console.log(JSON.stringify(refusal)); else console.error(refusal.message);
+          process.exitCode = 1; return;
+        }
+          preview = await client.post<Record<string, unknown>>(`/api/seat/set-runtime/${encodeURIComponent(opts.seat)}`, {
+          runtime, accountHome: opts.accountHome, reason: opts.reason, dryRun: true,
+          ...(opts.model !== undefined ? { model: opts.model } : {}),
+          ...(opts.codexConfigProfile !== undefined ? { codexConfigProfile: opts.codexConfigProfile } : {}),
+          ...(opts.tokenFile !== undefined ? { tokenFile: opts.tokenFile, accountLabel: opts.toAccount } : {}),
+        }, { timeoutMs: 30_000 });
+        } catch {
+          const refusal = { ok: false, code: "account_home_preflight_failed", message: "The read-only account-home preflight failed; no switch was requested." };
+          if (opts.json) console.log(JSON.stringify(refusal)); else console.error(refusal.message);
+          process.exitCode = 1; return;
+        }
+        const token = opts.tokenFile ? { label: opts.toAccount!, tokenFile: opts.tokenFile } : undefined;
+        if (!accountHomePlanMatches(preview.data, opts.accountHome, token)) {
+          const refusal = { ok: false, code: "account_home_switch_unavailable", message: preview.data["message"]
+            ?? "The daemon did not acknowledge the selected account home and token. No switch was requested." };
+          if (opts.json) console.log(JSON.stringify(refusal)); else console.error(refusal.message);
+          process.exitCode = 1; return;
+        }
+        if (opts.dryRun) {
+          console.log(opts.json ? JSON.stringify(preview.data) : `Account-home plan for ${opts.seat}: ${opts.accountHome}. Nothing changed.`);
+          return;
+        }
+        let result;
+        try {
+          result = await client.post<Record<string, unknown>>("/api/provider/switch", {
+            seat: opts.seat, ...target, accountHome: opts.accountHome, reason: opts.reason, dryRun: false,
+            ...(opts.model !== undefined ? { model: opts.model } : {}),
+            ...(opts.codexConfigProfile !== undefined ? { codexConfigProfile: opts.codexConfigProfile } : {}),
+          }, { timeoutMs: 300_000 });
+        } catch (error) {
+          if (!(error instanceof DaemonTimeoutError)) throw error;
+          result = { status: 202, data: { ok: false, code: "runtime_switch_outcome_unknown",
+            message: `The daemon may still be switching. Inspect rig seat status ${opts.seat}; do not retry the switch.` } };
+        }
+        if (opts.json) console.log(JSON.stringify(result.data));
+        else if (result.data["ok"] === true) console.log(`Account-home ${opts.dryRun ? "plan" : "switch"} for ${opts.seat}: ${opts.accountHome}. A fresh conversation carries the handover; the account is not verified until a real tool turn.`);
+        else console.error(result.data["message"] ?? "The account-home switch did not complete.");
+        process.exitCode = result.status >= 400 || result.data["ok"] !== true || result.data["recoveryPending"] === true ? 1 : 0;
+        return;
+      }
+      if (opts.dryRun || opts.reason || opts.model || opts.codexConfigProfile) {
+        console.error("--reason, --model, --codex-config-profile and --dry-run require --account-home.");
         process.exitCode = 1;
         return;
       }
