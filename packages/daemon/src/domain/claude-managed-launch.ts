@@ -239,7 +239,9 @@ export class ClaudeManagedLaunch {
   /** The state file under the seat's own or the daemon's non-empty CLAUDE_CONFIG_DIR, or undefined when neither
    * selects one. Classic bootstrap provisions it in addition to HOME/.claude.json. */
   selectedStatePath(cwd: string, nodeId?: string, accountHome?: string | null): string | undefined {
-    return (accountHome ?? this.selectedConfigDir(nodeId, accountHome === null)) ? this.configPaths(cwd, nodeId, accountHome).statePath : undefined;
+    const selected = accountHome ?? this.selectedConfigDir(nodeId, accountHome === null);
+    // Clearing preserves even an explicitly empty baseline, just as the managed child does.
+    return (accountHome === null ? selected !== undefined : !!selected) ? this.configPaths(cwd, nodeId, accountHome).statePath : undefined;
   }
 
   private context(cwd: string, nodeId: string, accountHome?: string | null) {
