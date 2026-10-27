@@ -673,6 +673,8 @@ CLAUDE_CONFIG_DIR and are not isolated by an account home; check them before rel
         if (opts.json) console.log(JSON.stringify(result.data));
         else if (result.data["recoveryPending"] === true) {
           console.error(`Recovery is still pending for ${opts.seat}; the account-home switch is not complete.`);
+          if (typeof result.data["message"] === "string") console.error(result.data["message"]);
+          if (typeof result.data["guidance"] === "string") console.error(result.data["guidance"]);
           for (const warning of (result.data["warnings"] as string[] | undefined) ?? []) console.error(`Warning: ${warning}`);
         }
         else if (result.data["ok"] === true) console.log(`Account-home switch for ${opts.seat}: ${opts.accountHome ?? "configured defaults"}. A fresh conversation carries the handover; the account is not verified until a real tool turn.`);

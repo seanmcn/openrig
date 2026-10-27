@@ -358,7 +358,7 @@ export class SeatRuntimeSwitchService {
       db.prepare(`UPDATE seat_runtime_switches SET phase = 'abandoned', outcome = ?, attention = ?, updated_at = ? WHERE id = ? AND committed_at IS NULL`)
         .run(why, retired.ok ? null : `The staged successor couldn't be retired: ${retired.message}`, stamp(), id);
       tmux.finishLaunchBinding(row.staging_session);
-      return { ...failed(`${why}${retired.ok ? "" : ` The staged successor couldn't be retired (${retired.message}); recover with rig seat set-runtime ${ctx.seatRef} --recover.`}`), switchId: id, ...(!retired.ok ? { recoveryPending: true } : {}) };
+      return { ...failed(`${why}${retired.ok ? "" : ` The staged successor couldn't be retired (${retired.message}); recover with rig seat set-runtime ${ctx.seatRef} --recover.`}`, retired.ok ? undefined : `Recovery is pending for ${ctx.seatRef}. Run rig seat set-runtime ${ctx.seatRef} --recover.`), switchId: id, ...(!retired.ok ? { recoveryPending: true } : {}) };
     };
 
     // 1. The successor, on the target runtime, beside the predecessor.
