@@ -66,7 +66,7 @@ interface SeatStatusResponse {
   runtime_home?: {
     variable: string;
     home: string | null;
-    source: "member" | "rig" | "daemon" | "native_default";
+    source: "member" | "rig" | "daemon" | "native_default" | "account-switch";
     ignored?: { source: string; value: string };
   };
   claude_token?: { label: string; token_file: string; file: "readable" | "unusable"; problem?: string; notice?: string };
@@ -201,6 +201,7 @@ function printHuman(status: SeatStatusResponse): void {
   if (status.runtime_home) {
     const h = status.runtime_home;
     const from = h.source === "member" || h.source === "rig" ? `the seat's own, from its ${h.source} env`
+      : h.source === "account-switch" ? "the seat's selected account home"
       : h.source === "daemon" ? "the daemon's" : "the native default";
     console.log(`Runtime home (${h.variable}) for launches: ${display(h.home)} (${from}; configured, not proof of the login a running session uses)`);
     if (h.ignored) console.log(`  Ignored: its ${h.ignored.source} env sets ${h.variable}=${h.ignored.value}, which isn't an absolute path`);

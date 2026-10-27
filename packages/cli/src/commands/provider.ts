@@ -631,7 +631,19 @@ a CLAUDE_CODE_OAUTH_TOKEN the seat still receives outranks that login, and the r
           process.exitCode = 1; return;
         }
         if (opts.dryRun) {
-          console.log(opts.json ? JSON.stringify(preview.data) : `Account-home plan for ${opts.seat}: ${opts.accountHome}. Nothing changed.`);
+          if (opts.json) console.log(JSON.stringify(preview.data));
+          else {
+            console.log(`Account-home plan for ${opts.seat}: ${opts.accountHome}. Nothing changed.`);
+            const settings = (preview.data["settings"] ?? {}) as Record<string, { value: string | null; source: string }>;
+            console.log(`Settings on ${String(preview.data["to"])}:`);
+            for (const [name, setting] of Object.entries(settings)) console.log(`  ${name}: ${setting.value ?? "none"} (${setting.source})`);
+            const permission = preview.data["permission"] as { mode: string; source: string } | undefined;
+            if (permission) console.log(`  permissions: ${permission.mode} (${permission.source})`);
+            const dropped = (preview.data["dropped"] as Array<{ setting: string; value: string }> | undefined) ?? [];
+            if (dropped.length) console.log(`Cleared from ${String(preview.data["from"])}: ${dropped.map(choice => `${choice.setting} ${choice.value}`).join("; ")}.`);
+            console.log("Costs:");
+            for (const cost of (preview.data["costs"] as string[] | undefined) ?? []) console.log(`  - ${cost}`);
+          }
           return;
         }
         let result;
@@ -647,7 +659,11 @@ a CLAUDE_CODE_OAUTH_TOKEN the seat still receives outranks that login, and the r
             message: `The daemon may still be switching. Inspect rig seat status ${opts.seat}; do not retry the switch.` } };
         }
         if (opts.json) console.log(JSON.stringify(result.data));
-        else if (result.data["ok"] === true) console.log(`Account-home ${opts.dryRun ? "plan" : "switch"} for ${opts.seat}: ${opts.accountHome}. A fresh conversation carries the handover; the account is not verified until a real tool turn.`);
+        else if (result.data["recoveryPending"] === true) {
+          console.error(`Recovery is still pending for ${opts.seat}; the account-home switch is not complete.`);
+          for (const warning of (result.data["warnings"] as string[] | undefined) ?? []) console.error(`Warning: ${warning}`);
+        }
+        else if (result.data["ok"] === true) console.log(`Account-home switch for ${opts.seat}: ${opts.accountHome}. A fresh conversation carries the handover; the account is not verified until a real tool turn.`);
         else console.error(result.data["message"] ?? "The account-home switch did not complete.");
         process.exitCode = result.status >= 400 || result.data["ok"] !== true || result.data["recoveryPending"] === true ? 1 : 0;
         return;
