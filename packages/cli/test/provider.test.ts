@@ -98,6 +98,33 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
     expect(seen.length).toBe(before);
   });
 
+  it("reports pending account-home recovery with its instruction instead of success", async () => {
+    const result = await run(["switch", "--seat", "dev-a@rig", "--to-account", "recovery-pending", "--account-home", "/accounts/api",
+      "--reason", "Plan limit"], runningDeps(port));
+    expect(result.exitCode).toBe(1);
+    expect(result.logs.join("\n")).toContain("Recovery is still pending");
+    expect(result.logs.join("\n")).toContain("rig seat set-runtime dev-a@rig --recover");
+    expect(result.logs.join("\n")).not.toContain("A fresh conversation carries the handover");
+  });
+
+  it("shows account-home dry-run settings, cleared choices and costs without requesting a switch", async () => {
+    const before = seen.length;
+    const args = ["switch", "--seat", "dev-a@rig", "--to-account", "api-account", "--account-home", "/accounts/api",
+      "--reason", "Plan limit", "--dry-run"];
+    const result = await run(args, runningDeps(port));
+    const output = result.logs.join("\n");
+    expect(output).toContain("Nothing changed.");
+    expect(output).toContain("model: gpt-5.5 (explicit)");
+    expect(output).toContain("effort: none (native_default)");
+    expect(output).toContain("Cleared from codex: Codex profile old-profile.");
+    expect(output).toContain("A fresh conversation carries only the handover.");
+    expect(result.exitCode).toBeFalsy();
+    expect(seen.slice(before).some(request => request.url === "/api/provider/switch")).toBe(false);
+    const json = JSON.parse((await run([...args, "--json"], runningDeps(port))).logs[0]!);
+    expect(json).toMatchObject({ dryRun: true, settings: { model: { value: "gpt-5.5", source: "explicit" } },
+      dropped: [{ setting: "Codex profile", value: "old-profile" }], costs: ["A fresh conversation carries only the handover."] });
+  });
+
   beforeAll(async () => {
     server = http.createServer(async (req, res) => {
       let body = "";
@@ -108,7 +135,9 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
       if (path?.startsWith("/api/seat/status/")) return send(200, { runtime: "codex" });
       if (path?.startsWith("/api/seat/set-runtime/")) {
         const request = JSON.parse(body);
-        return send(200, { ok: true, dryRun: true, accountHome: request.accountHome,
+        return send(200, { ok: true, dryRun: true, accountHome: request.accountHome, from: "codex", to: "codex",
+          settings: { model: { value: "gpt-5.5", source: "explicit" }, effort: { value: null, source: "native_default" } },
+          dropped: [{ setting: "Codex profile", value: "old-profile" }], costs: ["A fresh conversation carries only the handover."],
           ...(request.tokenFile ? { accountToken: { label: request.accountLabel, tokenFile: request.tokenFile } } : {}) });
       }
       if (path === "/api/provider/status") return send(200, FOUR_BLOCK);
@@ -121,6 +150,8 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
       if (path === "/api/provider/precheck") return send(200, { safe: false, reasons: ["target_needs_reauth"] });
       if (path === "/api/provider/switch") {
         if (body.includes("bad")) return send(400, { error: "invalid target account" });
+        if (JSON.parse(body).toAccount === "recovery-pending") return send(200, { ok: true, changed: true,
+          recoveryPending: true, warnings: ["Run rig seat set-runtime dev-a@rig --recover before retrying."] });
         if (JSON.parse(body).accountHome) return send(200, { ok: true, changed: true, recoveryPending: false });
         return send(200, { outcome: "succeeded" });
       }

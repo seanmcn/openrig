@@ -59,11 +59,12 @@ describe.skipIf(process.platform === "win32")("a Claude seat's own subscription 
     const f = fixture({ label: "old-account", tokenFile }, {
       CLAUDE_CODE_OAUTH_TOKEN: "old-fixture", ANTHROPIC_API_KEY: "old-api-fixture", CODEX_ACCESS_TOKEN: "old-access-fixture",
       OPENAI_FEDERATION_RULE_ID: "old-rule-fixture", OPENAI_IDENTITY_TOKEN_FILE: "/old-identity-file-fixture",
+      OPENAI_PROJECT_ID: "old-project-fixture", AWS_BEARER_TOKEN_BEDROCK: "old-bedrock-fixture",
     });
     const selected = path.join(root, "selected-account"); mkdirSync(selected);
     writeFileSync(path.join(f.root, "bin", "claude"), `#!/bin/sh
 if [ "$1" = --help ]; then printf '%s\\n' '--permission-mode <mode> (choices: "auto", "default")'; exit 0; fi
-printf '%s|%s|%s|%s|%s|%s' "$CLAUDE_CONFIG_DIR" "\${CLAUDE_CODE_OAUTH_TOKEN+set}" "\${ANTHROPIC_API_KEY+set}" "\${CODEX_ACCESS_TOKEN+set}" "\${OPENAI_FEDERATION_RULE_ID+set}" "\${OPENAI_IDENTITY_TOKEN_FILE+set}"
+printf '%s|%s|%s|%s|%s|%s|%s|%s' "$CLAUDE_CONFIG_DIR" "\${CLAUDE_CODE_OAUTH_TOKEN+set}" "\${ANTHROPIC_API_KEY+set}" "\${CODEX_ACCESS_TOKEN+set}" "\${OPENAI_FEDERATION_RULE_ID+set}" "\${OPENAI_IDENTITY_TOKEN_FILE+set}" "\${OPENAI_PROJECT_ID+set}" "\${AWS_BEARER_TOKEN_BEDROCK+set}"
 `);
     const command = await f.command(selected);
     expect(command).not.toContain(tokenFile);
@@ -71,8 +72,9 @@ printf '%s|%s|%s|%s|%s|%s' "$CLAUDE_CONFIG_DIR" "\${CLAUDE_CODE_OAUTH_TOKEN+set}
     const result = await f.run(command, {
       CLAUDE_CODE_OAUTH_TOKEN: "pane-old-fixture", ANTHROPIC_API_KEY: "pane-old-api-fixture", CODEX_ACCESS_TOKEN: "pane-old-access-fixture",
       OPENAI_FEDERATION_RULE_ID: "pane-old-rule-fixture", OPENAI_IDENTITY_TOKEN_FILE: "/pane-old-identity-file-fixture",
+      OPENAI_PROJECT_ID: "pane-old-project-fixture", AWS_BEARER_TOKEN_BEDROCK: "pane-old-bedrock-fixture",
     });
-    expect(result.stdout).toBe(`${selected}|||||`);
+    expect(result.stdout).toBe(`${selected}|||||||`);
     expect(f.events).toEqual([]);
   });
 
