@@ -608,16 +608,16 @@ a CLAUDE_CODE_OAUTH_TOKEN the seat still receives outranks that login, and the r
           const status = await client.get<{ ok?: boolean; status?: { runtime?: string } }>(`/api/seat/status/${encodeURIComponent(opts.seat)}`);
           const runtime = status.data.status?.runtime;
           if (status.status >= 400 || (runtime !== "codex" && runtime !== "claude-code")) {
-          const refusal = { ok: false, code: "account_home_preflight_failed", message: "The seat runtime could not be read; no switch was requested." };
-          if (opts.json) console.log(JSON.stringify(refusal)); else console.error(refusal.message);
-          process.exitCode = 1; return;
-        }
+            const refusal = { ok: false, code: "account_home_preflight_failed", message: "The seat runtime could not be read; no switch was requested." };
+            if (opts.json) console.log(JSON.stringify(refusal)); else console.error(refusal.message);
+            process.exitCode = 1; return;
+          }
           preview = await client.post<Record<string, unknown>>(`/api/seat/set-runtime/${encodeURIComponent(opts.seat)}`, {
-          runtime, accountHome: opts.accountHome, reason: opts.reason, dryRun: true,
-          ...(opts.model !== undefined ? { model: opts.model } : {}),
-          ...(opts.codexConfigProfile !== undefined ? { codexConfigProfile: opts.codexConfigProfile } : {}),
-          ...(opts.tokenFile !== undefined ? { tokenFile: opts.tokenFile, accountLabel: opts.toAccount } : {}),
-        }, { timeoutMs: 30_000 });
+            runtime, accountHome: opts.accountHome, reason: opts.reason, dryRun: true,
+            ...(opts.model !== undefined ? { model: opts.model } : {}),
+            ...(opts.codexConfigProfile !== undefined ? { codexConfigProfile: opts.codexConfigProfile } : {}),
+            ...(opts.tokenFile !== undefined ? { tokenFile: opts.tokenFile, accountLabel: opts.toAccount } : {}),
+          }, { timeoutMs: 30_000 });
         } catch {
           const refusal = { ok: false, code: "account_home_preflight_failed", message: "The read-only account-home preflight failed; no switch was requested." };
           if (opts.json) console.log(JSON.stringify(refusal)); else console.error(refusal.message);
