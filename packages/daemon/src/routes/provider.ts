@@ -96,6 +96,7 @@ function claudeSeatOf(c: Context): ClaudeSeatRelaunch {
   };
 }
 
+/** Expose provider views and switches, delegating isolated account homes to the successor-first runtime switch service. */
 export function providerRoutes(opts: ProviderRoutesOptions = {}): Hono {
   const router = new Hono();
   // Refresh legs across hosts live as long as these routes: overlapping requests join a running leg, and the last

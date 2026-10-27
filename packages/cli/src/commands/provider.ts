@@ -56,6 +56,7 @@ function printClaude(claude: { label: string; tokenFile: string | null; checked:
   if (claude.notChecked.length) console.log(`not checked (the seat's /status shows what it uses): ${claude.notChecked.join("; ")}`);
 }
 
+/** Build provider views and account switches; an isolated-home switch first requires the daemon to acknowledge its plan. */
 export function providerCommand(depsOverride?: StatusDeps): Command {
   const cmd = new Command("provider").description(
     "Provider accounts and usage signals, and moving one Codex seat to another login saved in its Codex home",

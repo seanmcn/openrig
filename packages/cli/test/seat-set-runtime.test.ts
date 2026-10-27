@@ -82,6 +82,20 @@ describe("rig seat set-runtime", () => {
     expect(exitCode).toBeFalsy();
   });
 
+  it("a human dry run identifies the selected account home and token reference without reading credentials", async () => {
+    const selected = { ...plan, accountHome: "/accounts/claude-plan",
+      accountToken: { label: "work-plan", tokenFile: "/tokens/work-plan" } };
+    const { calls, logs, exitCode } = await run({ status: 200, data: selected }, ["dev.impl@my-rig", "--runtime", "claude-code",
+      "--account-home", "/accounts/claude-plan", "--token-file", "/tokens/work-plan", "--account-label", "work-plan",
+      "--reason", "Use plan", "--dry-run"]);
+    expect(logs).toContain("Selected account home: /accounts/claude-plan");
+    expect(logs).toContain("Claude token reference: work-plan, read from /tokens/work-plan at launch");
+    expect(logs.join("\n")).toContain("Nothing changes until you run it without --dry-run.");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.body).toMatchObject({ dryRun: true });
+    expect(exitCode).toBeFalsy();
+  });
+
   it("a dry run shows the target's settings and where each comes from, what is cleared, and the costs", async () => {
     const { calls, logs, exitCode } = await run({ status: 200, data: plan }, ["dev.impl@my-rig", "--runtime", "claude-code", "--reason", "Codex limit", "--dry-run"]);
     expect(calls[0]).toMatchObject({ path: "/api/seat/set-runtime/dev.impl%40my-rig", body: { runtime: "claude-code", reason: "Codex limit", dryRun: true } });
@@ -104,6 +118,20 @@ describe("rig seat set-runtime", () => {
     expect(logs).toContain('The successor confirmed the handover: "picking up the review"');
     expect(logs).toContain("Queue: 3 open rows stay addressed to the seat; 1 claims moved to the successor.");
     expect(exitCode).toBeFalsy();
+  });
+
+  it("reports pending recovery without presenting the runtime switch as complete", async () => {
+    const pending = { ...plan, dryRun: false, switchId: "01SW", recoveryPending: true,
+      warnings: ["Run rig seat set-runtime dev.impl@my-rig --recover before trying again."] };
+    const args = ["dev.impl@my-rig", "--runtime", "claude-code", "--reason", "Plan limit"];
+    const { logs, errors, exitCode } = await run({ status: 200, data: pending }, args);
+    expect(logs.join("\n")).not.toContain("Switched dev.impl@my-rig");
+    expect(logs.join("\n")).toContain("Recovery is still pending");
+    expect(errors.join("\n")).toContain("rig seat set-runtime dev.impl@my-rig --recover");
+    expect(exitCode).toBe(1);
+    const json = await run({ status: 200, data: pending }, [...args, "--json"]);
+    expect(JSON.parse(json.logs.join("\n"))).toEqual(pending);
+    expect(json.exitCode).toBe(1);
   });
 
   it("a switch that didn't happen says why and what's unchanged, and exits 1", async () => {
