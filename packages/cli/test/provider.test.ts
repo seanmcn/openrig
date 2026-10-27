@@ -169,6 +169,17 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
       dropped: [{ setting: "Codex profile", value: "old-profile" }], costs: ["A fresh conversation carries only the handover."] });
   });
 
+  it("sends only an API-key file reference through the existing switch and precheck endpoints", async () => {
+    const args = ["--seat", "dev-a@rig", "--to-account", "cdx-a", "--api-key-file", "/synthetic/api-key", "--json"];
+    await run(["switch", ...args], runningDeps(port));
+    expect(JSON.parse(seen.at(-1)!.body)).toEqual({ seat: "dev-a@rig", toAccount: "cdx-a", apiKeyFile: "/synthetic/api-key", forceUnsafe: false });
+    await run(["precheck", ...args], runningDeps(port));
+    expect(new URL(seen.at(-1)!.url, "http://localhost").searchParams.get("apiKeyFile")).toBe("/synthetic/api-key");
+    const before = seen.length;
+    expect((await run(["switch", ...args, "--stored-login"], runningDeps(port))).exitCode).toBe(1);
+    expect(seen.length).toBe(before);
+  });
+
   beforeAll(async () => {
     server = http.createServer(async (req, res) => {
       let body = "";

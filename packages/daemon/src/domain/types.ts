@@ -42,7 +42,7 @@ export interface Node {
   accountHome?: string | null;
   codexConfigProfile?: string | null;
   /** A Claude seat's own subscription credential, as a reference (operator label and token-file path); null = none. */
-  claudeTokenRef?: { label: string; tokenFile: string } | null;
+  claudeTokenRef?: { label: string; tokenFile: string; kind?: "api-key" } | null;
   /** OPR.0.4.8.3 Seam B: attached permission_policy REF (builtin:<name> or spec-relative custom
    *  path), or null when none is attached (= the floor). */
   permissionPolicy?: string | null;

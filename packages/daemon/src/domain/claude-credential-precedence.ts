@@ -31,7 +31,7 @@ export interface CredentialPrecedence {
 /** One settings file's `apiKeyHelper` and outranking `env` entries, and with `storedLogin` its `env` block's
  *  `CLAUDE_CODE_OAUTH_TOKEN`. An absent file has none. */
 export function settingsFileConflicts(file: string, scope: string, read: (file: string) => string = (f) => fs.readFileSync(f, "utf8"),
-  opts: { storedLogin?: boolean; isolatedAccountHome?: boolean; profileSelectorsOnly?: boolean } = {}): { conflicts: CredentialConflict[]; instead?: CredentialConflict[]; checked?: string; notChecked?: string } {
+  opts: { storedLogin?: boolean; apiKey?: boolean; isolatedAccountHome?: boolean; profileSelectorsOnly?: boolean } = {}): { conflicts: CredentialConflict[]; instead?: CredentialConflict[]; checked?: string; notChecked?: string } {
   let text: string;
   try { text = read(file); } catch (err) {
     return (err as NodeJS.ErrnoException).code === "ENOENT"
@@ -42,9 +42,9 @@ export function settingsFileConflicts(file: string, scope: string, read: (file: 
   try { settings = JSON.parse(text) as typeof settings; } catch { return { conflicts: [], notChecked: `${scope} settings ${file} (not valid JSON)` }; }
   const remedy = `remove it from ${file} (OpenRig doesn't edit settings files)`;
   const conflicts: CredentialConflict[] = [];
-  if (!opts.profileSelectorsOnly && settings?.apiKeyHelper !== undefined) conflicts.push({ name: "apiKeyHelper", source: `${scope} settings ${file}`, remedy });
+  if (!opts.profileSelectorsOnly && !opts.apiKey && settings?.apiKeyHelper !== undefined) conflicts.push({ name: "apiKeyHelper", source: `${scope} settings ${file}`, remedy });
   const env = settings?.env && typeof settings.env === "object" ? settings.env as Record<string, unknown> : {};
-  const names = opts.profileSelectorsOnly ? ANTHROPIC_PROFILE_ENV
+  const names = opts.apiKey ? [...OUTRANKING_TOKEN_ENV, "ANTHROPIC_BASE_URL"] : opts.profileSelectorsOnly ? ANTHROPIC_PROFILE_ENV
     : [...OUTRANKING_TOKEN_ENV, ...(opts.isolatedAccountHome ? ["ANTHROPIC_BASE_URL", ...ANTHROPIC_PROFILE_ENV] : [])];
   for (const name of names) {
     if (env[name] !== undefined) conflicts.push({ name, source: `the env block of ${scope} settings ${file}`, remedy });
