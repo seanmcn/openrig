@@ -105,7 +105,7 @@ describe("rig provider CLI grammar (daemon-backed)", () => {
       seen.push({ url: req.url ?? "", method: req.method ?? "", body });
       const send = (code: number, obj: unknown) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
       const path = (req.url ?? "").split("?")[0];
-      if (path?.startsWith("/api/seat/status/")) return send(200, { ok: true, status: { runtime: "codex" } });
+      if (path?.startsWith("/api/seat/status/")) return send(200, { runtime: "codex" });
       if (path?.startsWith("/api/seat/set-runtime/")) {
         const request = JSON.parse(body);
         return send(200, { ok: true, dryRun: true, accountHome: request.accountHome,
