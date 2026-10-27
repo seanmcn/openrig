@@ -114,7 +114,7 @@ export class SeatLaunchEnvironment {
     const clearing = target.accountHome === null;
     const configuredHome = clearing && target.nodeId && target.runtime ? this.selectedAccountHome?.(target.nodeId, target.runtime, true) : undefined;
     const homeVar = RUNTIME_HOME_VAR[target.runtime as HomeRuntime];
-    const clearStep = clearing && homeVar ? `unset ${homeVar}; ${configuredHome ? `export ${homeVar}=${shellQuote(configuredHome)}; ` : ""}` : "";
+    const clearStep = clearing && homeVar ? `unset ${homeVar}; ${configuredHome !== undefined ? `export ${homeVar}=${shellQuote(configuredHome)}; ` : ""}` : "";
     const codexHome = (target.runtime === "codex" ? accountHome : undefined) ?? target.codexHome ?? this.codexHome;
     const searchPath = this.sessionEnv.PATH;
     const accountStep = clearStep + (accountHome ? `unset ${ACCOUNT_HOME_PROVIDER_ENV.join(" ")}; ` : "");
