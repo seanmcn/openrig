@@ -175,8 +175,6 @@ export class ClaudeManagedLaunch {
     const target = this.target(nodeId);
     const cwd = target.cwd!;
     const conflicts: CredentialConflict[] = [];
-    if (this.accountHome(nodeId)) conflicts.push({ name: "account-home", source: "the seat's explicit native account-home selection",
-      remedy: "use rig provider switch --clear-account-home to return to configured defaults, or --account-home to select another isolated account" });
     const instead: CredentialConflict[] = [];
     const names = opts.apiKey ? [] : opts.storedLogin ? [...OUTRANKING_TOKEN_ENV, "CLAUDE_CODE_OAUTH_TOKEN"] : OUTRANKING_TOKEN_ENV;
     const found = (name: string) => name === "CLAUDE_CODE_OAUTH_TOKEN" ? instead : conflicts;
