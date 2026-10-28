@@ -60,7 +60,7 @@ function claudeSeatOf(c: Context): ClaudeSeatRelaunch {
       if (!rigRepo) return null;
       const row = rigRepo.db.prepare(`SELECT n.id, n.rig_id, n.logical_id, n.runtime, r.name, s.status, b.tmux_pane FROM sessions s
         JOIN nodes n ON n.id = s.node_id JOIN rigs r ON r.id = n.rig_id LEFT JOIN bindings b ON b.node_id = n.id
-        WHERE s.session_name = ? ORDER BY s.created_at DESC, s.id DESC LIMIT 1`)
+        WHERE s.session_name = ? ORDER BY s.id DESC LIMIT 1`)
         .get(seat) as { id: string; rig_id: string; logical_id: string; runtime: string | null; name: string; status: string; tmux_pane: string | null } | undefined;
       return row?.runtime === "claude-code"
         ? { nodeId: row.id, rigId: row.rig_id, rigName: row.name, logicalId: row.logical_id, running: row.status === "running", pane: row.tmux_pane ?? null } : null;

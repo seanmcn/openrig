@@ -184,6 +184,13 @@ describe("provider routes", () => {
       app.route("/api/provider", providerRoutes());
       await app.request("/api/provider/precheck?seat=dev-a@fixture-rig&toAccount=work&tokenFile=%2Ftokens%2Fwork");
       expect(lent.seat("dev-a@fixture-rig")).toMatchObject({ nodeId: node.id, logicalId: "dev.a", running: true, pane: "%101" });
+      // Restores can mix ISO and SQLite timestamp spellings; ULIDs retain creation order.
+      registry.updateStatus(session.id, "superseded");
+      const current = registry.registerSession(node.id, "dev-a@fixture-rig");
+      registry.updateStatus(current.id, "running");
+      db.prepare("UPDATE sessions SET created_at = ? WHERE id = ?").run("2026-10-28T00:00:01Z", session.id);
+      db.prepare("UPDATE sessions SET created_at = ? WHERE id = ?").run("2026-10-28 00:00:02", current.id);
+      expect(lent.seat("dev-a@fixture-rig")).toMatchObject({ running: true });
       expect(await lent.exclusive(node.id, async () => "held")).toBe("held");
       expect(leased).toEqual([[node.id]]);
       expect(await lent.relaunchInPane(rig.id, "dev.a", "snap-1")).toEqual({ ok: true, status: "resumed", warnings: ["dev-a@fixture-rig: a launch warning"] });
