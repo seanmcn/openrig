@@ -28,9 +28,28 @@ export interface CredentialPrecedence {
   notChecked: string[];
 }
 
+/** Match the bounded profile-fingerprint read: a FIFO cannot hold the open, and only a regular file up to 1 MiB is read.
+ * Kept synchronous because launch assertions must finish before native input is dispatched. */
+function readCredentialSettings(file: string): string {
+  const maxBytes = 1024 * 1024;
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > maxBytes) throw new Error("Unusable credential settings file");
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    for (;;) {
+      const count = fs.readSync(fd, buffer, length, buffer.length - length, length);
+      if (count === 0) return buffer.subarray(0, length).toString("utf8");
+      length += count;
+      if (length > maxBytes) throw new Error("Credential settings file exceeds limit");
+    }
+  } finally { fs.closeSync(fd); }
+}
+
 /** One settings file's `apiKeyHelper` and outranking `env` entries, and with `storedLogin` its `env` block's
  *  `CLAUDE_CODE_OAUTH_TOKEN`. An absent file has none. */
-export function settingsFileConflicts(file: string, scope: string, read: (file: string) => string = (f) => fs.readFileSync(f, "utf8"),
+export function settingsFileConflicts(file: string, scope: string, read: (file: string) => string = readCredentialSettings,
   opts: { storedLogin?: boolean; apiKey?: boolean; isolatedAccountHome?: boolean; profileSelectorsOnly?: boolean } = {}): { conflicts: CredentialConflict[]; instead?: CredentialConflict[]; checked?: string; notChecked?: string } {
   let text: string;
   try { text = read(file); } catch (err) {
