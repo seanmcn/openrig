@@ -1351,7 +1351,8 @@ export class RestoreOrchestrator {
 
     const restored = await this.postLaunchRestore(entry, rigId, data, launchResult.sessionName, launchResult,
       { ...opts, ...(claudeExecutable ? { claudeExecutable } : {}) }, warnings, priorState, seatRehydration, resumeSession);
-    const checked = this.checkRestoredGuidance(restored, entry.node, rigId, data, warnings);
+    const checked = { ...this.checkRestoredGuidance(restored, entry.node, rigId, data, warnings),
+      ...(keptPane ? { launchStarted: true as const } : {}) };
     return selectedHistory ? { ...checked, sourceSessionId: selectedHistory.historySessionId, resultSessionId: launchResult.session.id } : checked;
   }
 

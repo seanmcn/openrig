@@ -117,8 +117,8 @@ async function switchHeld(input: ProviderSwitchInput, relaunch: ClaudeSeatRelaun
   if (!relaunched.ok) {
     const recoveryCommand = `rig launch ${rigName} ${logicalId} --snapshot-id ${snapshot.snapshotId}`;
     report.restart = { outcome: relaunched.code, message: relaunched.message, recoveryCommand,
-      remainingStep: `If the pane (rig capture ${input.seat}) shows no running Claude, stop the seat first (rig seat stop ${input.seat} --reason "<why>"), `
-        + `then run the recovery command; it resumes the conversation from snapshot ${snapshot.snapshotId} with the new reference. The way back works once the seat runs.` };
+      remainingStep: `Inspect the pane (rig capture ${input.seat}). If a leftover shell/session remains without a running Claude, stop it first (rig seat stop ${input.seat} --reason "<why>"). `
+        + `If the session is already absent, run the recovery command directly; it resumes the conversation from snapshot ${snapshot.snapshotId} with the new reference. The way back works once the seat runs.` };
     return { outcome: "unknown", reasons: [relaunched.code === "relaunch_threw" ? "relaunch_threw" : `relaunch_${relaunched.code.replace(/-/g, "_")}`], seat: report,
       message: `${input.seat}'s relaunch in its pane from snapshot ${snapshot.snapshotId} didn't report a resumed conversation (${relaunched.code}: ${relaunched.message}). `
         + "Its process may have been ended. Not retried." };

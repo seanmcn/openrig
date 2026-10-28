@@ -497,6 +497,8 @@ export interface RestoreValidationBlocker {
 }
 
 export interface RestoreNodeResult {
+  /** An in-place restore started a replacement shell; a later refusal cannot leave the predecessor untouched. */
+  launchStarted?: true;
   nodeId: string;
   logicalId: string;
   /** Set only by an explicit selected-history startup; these are runtime row IDs, not native tokens. */

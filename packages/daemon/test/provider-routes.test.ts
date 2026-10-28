@@ -199,6 +199,8 @@ describe("provider routes", () => {
       // Restore's stops before it touches the seat leave it unchanged; anything else after the launch began is unknown.
       launched = { ok: true, launched: [{ logicalId: "dev.a", status: "awaiting-decision", error: "decide first" }] };
       expect(await lent.relaunchInPane(rig.id, "dev.a", "snap-1")).toMatchObject({ ok: false, effect: "none", code: "awaiting-decision" });
+      launched = { ok: true, launched: [{ logicalId: "dev.a", status: "awaiting-decision", launchStarted: true, error: "resume failed after cutover" }] };
+      expect(await lent.relaunchInPane(rig.id, "dev.a", "snap-1")).toMatchObject({ ok: false, effect: "unknown", code: "awaiting-decision" });
       launched = { ok: true, launched: [{ logicalId: "dev.a", status: "failed", error: "the pane couldn't be respawned" }] };
       expect(await lent.relaunchInPane(rig.id, "dev.a", "snap-1")).toMatchObject({ ok: false, effect: "unknown", code: "failed" });
       launched = { ok: false, code: "snapshot_not_found", message: "no such snapshot" };

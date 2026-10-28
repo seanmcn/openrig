@@ -90,7 +90,7 @@ function claudeSeatOf(c: Context): ClaudeSeatRelaunch {
       const node = result.launched?.find((n) => n.logicalId === logicalId);
       if (node?.status === "resumed") return { ok: true, status: "resumed", warnings: result.warnings ?? [] };
       // Restore stops for a decision, or leaves an attached CLI alone, before it touches the seat.
-      const untouched = node?.status === "awaiting-decision" || node?.status === "left_attached";
+      const untouched = !node?.launchStarted && (node?.status === "awaiting-decision" || node?.status === "left_attached");
       return { ok: false, effect: untouched ? "none" : "unknown", code: node?.status ?? "not_launched", message: node?.error ?? "The seat wasn't launched from the snapshot." };
     },
   };
