@@ -267,6 +267,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       try { this.claudeManagedLaunch!.assertAccountHome(binding.nodeId, accountHome, binding.accountHome ? binding.accountToken ?? null : undefined); }
       catch (error) { return { ok: false, error: (error as Error).message }; }
     }
+    const claudeCommand = binding.claudeExecutable ? `exec ${shellQuote(binding.claudeExecutable)}` : "claude";
     this.autoLaunches.delete(binding.nodeId);
     opts = { ...opts, ...(opts.forkSource ? { forkSource: { ...opts.forkSource } } : {}) };
     if (!binding.tmuxSession) {
@@ -285,6 +286,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       try {
         if (!this.claudeManagedLaunch) await unresolvedClaudePermissionModes();
         managed = await this.claudeManagedLaunch!.prepare({ nodeId: binding.nodeId, cwd: binding.cwd,
+          ...(binding.claudeExecutable ? { executable: binding.claudeExecutable } : {}),
           session: binding.tmuxSession, pane: binding.tmuxPane, generation: binding.launchGeneration,
           ...(binding.accountHome !== undefined ? { accountHome: binding.accountHome, accountToken: binding.accountHome === null ? binding.accountToken : binding.accountToken ?? null } : {}),
           ...(binding.runtimeSwitchFrom ? { runtimeSwitch: { fromRuntime: binding.runtimeSwitchFrom.runtime, session: binding.runtimeSwitchFrom.session,
@@ -368,7 +370,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         // The non-managed command text is parsed by the pane shell, so the
         // parent id needs the same quoting as --model/--effort above (and as
         // the codex fork path) — a hostile id must not leave --resume.
-        : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${advisorArg}${additionArg} --resume ${shellQuote(parentId)} --fork-session --session-id ${forkSessionId} --name ${opts.name}`;
+        : `${rendererPrefix}${claudeCommand} ${permissionMode}${modelArg}${effortArg}${advisorArg}${additionArg} --resume ${shellQuote(parentId)} --fork-session --session-id ${forkSessionId} --name ${opts.name}`;
       const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent)
         : await sendClassic(cmd);
       if (!textResult.ok) {
@@ -389,8 +391,8 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...launchArgs, ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...(advisor ? ["--advisor", advisor] : []), ...additionArgs,
       ...(opts.resumeToken ? ["--resume", opts.resumeToken] : ["--session-id", generatedSessionId!]), "--name", opts.name],
       opts.resumeToken ? claudeResumeLaunchEnv(opts.resumeToken) : undefined) : opts.resumeToken
-      ? `${claudeResumeLaunchPrefix(opts.resumeToken)}${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${advisorArg}${additionArg} --resume ${shellQuote(opts.resumeToken)} --name ${opts.name}`
-      : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg}${advisorArg}${additionArg} --session-id ${generatedSessionId} --name ${opts.name}`;
+      ? `${claudeResumeLaunchPrefix(opts.resumeToken)}${rendererPrefix}${claudeCommand} ${permissionMode}${modelArg}${effortArg}${advisorArg}${additionArg} --resume ${shellQuote(opts.resumeToken)} --name ${opts.name}`
+      : `${rendererPrefix}${claudeCommand} ${permissionMode}${modelArg}${effortArg}${advisorArg}${additionArg} --session-id ${generatedSessionId} --name ${opts.name}`;
 
     if (opts.beforeNativeDispatch && !opts.beforeNativeDispatch()) return { ok: false, error: "Selected history changed during Claude launch preparation; no native command was sent.", recovery: "attention_required" };
     const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, beforeManagedInput)
