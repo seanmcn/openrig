@@ -30,10 +30,25 @@ With neither a provider nor a session, the daemon's open and preview APIs try
 a live Herdr first, then a live cmux. An explicit session always selects Herdr
 and skips that fallback, including when the daemon's default Herdr endpoint is down.
 
-An explicit session resolves under the daemon user's Herdr session directory;
-it takes precedence over that daemon's default socket override. The selection
-belongs to the request. Saved views still describe membership and layout, so
-pass `--session` again when reopening the view in that session.
+Session paths use the daemon's `XDG_CONFIG_HOME` when set, or `HOME/.config`
+when unset. Relative paths (including an empty value) resolve from the daemon's
+startup directory, matching Herdr's configuration selection. Named sessions live under
+`herdr/sessions/<name>/herdr.sock`; `default` uses `herdr/herdr.sock` directly.
+These settings are captured when the daemon starts.
+
+If the requested name equals the daemon's `HERDR_SESSION`, it keeps that
+session's explicit `HERDR_SOCKET_PATH`. A different requested name uses the
+configuration-tree path, without reusing the override or inferring a session
+from an arbitrary socket path. With an explicit socket but no configured
+session name, omit `--session` to keep that exact endpoint. A missing selected
+socket never falls back to another session. Viewer and follow operations carry
+that exact socket to the CLI through `HERDR_SOCKET_PATH`, without an explicit
+CLI `--session` that would override it. They check that the CLI reports the
+selected socket before changing its panes. Daemon-side CLI calls retain the
+startup environment; desktop follow uses the socket confirmed by the daemon.
+
+The selection belongs to the request. Saved views still describe membership
+and layout, so pass `--session` again when reopening the view in that session.
 
 The existing view rules apply: saved views, rig and pod views, read-only mission
 and slice views, pagination, absent seats and partial results all use the same
@@ -197,6 +212,68 @@ Preview is read-only. A member without owned viewer provenance is
 `not-provisioned`; the ensure operation below can establish a reusable provider
 mapping. An explicit open retains the provider's existing workspace behavior;
 it does not continuously reconcile the view or change an agent's lifecycle.
+
+## Following one task
+
+`rig terminal open qitem:<id> --follow` keeps one workspace following the
+task's current obligation owners. A joining member gets a verified local
+viewer tile without taking focus. A departing member loses only its viewer,
+after a grace period; the agent and its conversation keep running. The
+explanation strip names joins, departures, unavailable terminals and limits.
+The first workspace on an empty provider may become focused.
+
+This increment supports the qualified **Linux Herdr 0.9.5/protocol 22**
+endpoint. Other platforms/providers and other selector kinds retain ordinary
+one-shot open. Use `--provider herdr --json` to operate without opening a
+desktop window, and `--session <name>` to select that endpoint. Opening a tile
+can change the agent's terminal size; `ignore-size` does not guarantee isolation.
+
+```bash
+rig terminal open qitem:example --follow --provider herdr --json
+rig terminal open qitem:example --follow --provider herdr --pin reviewer@team
+rig terminal open qitem:example --follow --provider herdr --max-tiles 12
+rig terminal open qitem:example --follow --provider herdr --suppress reviewer@team --suppression-ms 60000
+rig terminal open qitem:example --no-follow
+```
+
+`--unpin` and `--unsuppress` reverse those presentation choices. The default
+cap is eight tiles; explicitly raising `--max-tiles` overrides it. Pins can
+exceed the cap rather than being evicted. A departed tile retained for typed or
+unconfirmed input does not consume a slot for joining members. Disabling removes
+the saved following selector and keeps the existing layout intact.
+
+The default departure grace is four seconds (`--grace-ms`). A focused leaver
+gets another twelve seconds for reading (`--focus-retention-ms`); before its
+tile closes, focus moves to a verified surviving member, or to the explanation
+strip when none remains. Typed or unconfirmed input keeps the tile, labeled
+as no longer participating. Explicit suppression also retains a typed draft.
+Pi, terminal and community harness input may be unreadable to the composer
+inspector: those tiles remain while input is unconfirmed, even after unpinning.
+Each input-retained departure gets one delayed recheck after thirty seconds.
+After that, queue or node/session lifecycle events, or an explicit repeat of
+the follow command, can reconsider it. Activity hooks do not wake following,
+and input is not repeatedly polled. Draft text is never saved.
+
+Following consumes Core events and one-shot retention/suppression deadlines,
+not repeated CLI membership queries. Complete empty membership drains the
+tiles and preserves the workspace. Once no retained tiles remain, following
+stops and the selector releases its active slot; new work does not automatically
+restart it. Run `--follow` again to resume the same workspace. An incomplete source, failed provider read
+or changed pane/terminal generation retains the previous view and reports
+the uncertainty. It never authorizes a blind workspace rebuild or close.
+`rig terminal views --json` and `rig terminal status --json` include the saved
+active selectors and latest following status. Active selectors and owned viewer provenance
+survive daemon restarts; task membership is always re-derived.
+
+The owner-authorized HTTP operation is `POST /api/terminal/follow` with
+`{view:"qitem:<id>",provider:"herdr",session?,enabled:true,maxTiles?,pin?,unpin?,
+suppress?,unsuppress?,suppressionMs?,graceMs?,focusRetentionMs?,expectedPlan?}`.
+Seat controls are arrays of names from the current/retained view. It uses the
+existing terminal bearer boundary, like ensure-viewer. The response includes
+the stable `workspaceId`, normal open partitions, `viewDescriptor`, and
+`following:{id,enabled,state,maxTiles,tiles,events,overflow,nextAt?}`. Presentation
+provenance grants no membership or input authority. This is a local native
+viewer operation; browser input and remote-host provisioning are separate.
 
 ## Ensuring an owner viewer
 

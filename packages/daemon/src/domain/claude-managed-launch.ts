@@ -18,6 +18,8 @@ import { claudeSeatTokenFallbackNotice, claudeSeatTokenFileProblem, claudeSeatTo
 import { isolatedClaudeAccountProblem, OUTRANKING_TOKEN_ENV, projectRootForLocalSettings, settingsFileConflicts, type CredentialConflict, type CredentialPrecedence } from "./claude-credential-precedence.js";
 
 export interface ClaudeLaunchTarget {
+  /** A running seat's verified executable, carried through its in-place continuation. */
+  executable?: string;
   nodeId: string;
   cwd?: string;
   session?: string;
@@ -244,7 +246,7 @@ export class ClaudeManagedLaunch {
     return (accountHome === null ? selected !== undefined : !!selected) ? this.configPaths(cwd, nodeId, accountHome).statePath : undefined;
   }
 
-  private context(cwd: string, nodeId: string, accountHome?: string | null) {
+  private context(cwd: string, nodeId: string, accountHome?: string | null, selectedExecutable?: string) {
     const { PATH, HOME } = this.sessionEnv;
     const CLAUDE_CONFIG_DIR = accountHome ?? this.selectedConfigDir(nodeId, accountHome === null);
     if (!PATH || !HOME || !path.isAbsolute(HOME)) throw new Error("Claude managed launch context is unresolved: managed PATH and absolute HOME are required.");
@@ -258,8 +260,9 @@ export class ClaudeManagedLaunch {
     if (CLAUDE_CONFIG_DIR !== undefined) env.CLAUDE_CONFIG_DIR = configDir;
     if (claudeClassicRendererEnvPrefix(this.rendererEnv)) env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN = "1";
     let executable: string | undefined;
-    for (const dir of search) {
-      const candidate = path.join(dir, "claude");
+    const candidates = selectedExecutable ? [selectedExecutable] : search.map(dir => path.join(dir, "claude"));
+    for (const candidate of candidates) {
+      if (!path.isAbsolute(candidate)) continue;
       try { accessSync(candidate, constants.X_OK); if (!statSync(candidate).isFile()) continue; }
       catch { continue; }
       executable = realpathSync(candidate); break;
@@ -298,7 +301,7 @@ export class ClaudeManagedLaunch {
     const accountHome = target.accountHome !== undefined ? target.accountHome : seatAccountHome(this.db, target.nodeId, "claude-code");
     if (accountHome) this.assertAccountHome(target.nodeId, accountHome, target.accountHome ? target.accountToken ?? null : undefined);
     const credentialKeys: readonly string[] = accountHome ? ACCOUNT_HOME_PROVIDER_ENV : [];
-    const context = this.context(cwd, target.nodeId, accountHome);
+    const context = this.context(cwd, target.nodeId, accountHome, target.executable);
     // This is the existing managed session channel, not arbitrary shell variables.
     // Filter out the explicit capability environment and overwrite launch identity.
     const inherited = Object.keys(this.sessionEnv).filter(key => this.sessionEnv[key] !== undefined
@@ -307,7 +310,7 @@ export class ClaudeManagedLaunch {
     const assertCurrent = () => {
       if (accountHome) this.assertAccountHome(target.nodeId, accountHome, target.accountHome ? target.accountToken ?? null : undefined);
       if (JSON.stringify(this.target(target.nodeId, switching?.fromRuntime)) !== JSON.stringify(before)
-        || JSON.stringify(this.context(cwd, target.nodeId, accountHome)) !== JSON.stringify(context)
+        || JSON.stringify(this.context(cwd, target.nodeId, accountHome, target.executable)) !== JSON.stringify(context)
         || JSON.stringify(Object.keys(this.sessionEnv).filter(key => this.sessionEnv[key] !== undefined
           && !["PATH", "HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"].includes(key) && !credentialKeys.includes(key))) !== JSON.stringify(inherited)) {
         throw new Error("Claude managed launch context changed during capability discovery/input; retry explicitly.");
