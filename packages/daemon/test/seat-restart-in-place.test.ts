@@ -375,11 +375,11 @@ describe("rig seat restart --keep-conversation: gates before any signal", () => 
   });
 
   it("recognizes a MainThread-named npm launcher only when its OS executable is Node", async () => {
-    for (const exe of ["/usr/local/bin/node", "/usr/bin/python3", ""]) {
+    for (const exe of ["/usr/local/bin/node", "/usr/bin/python3", "", null]) {
       const w = world({ between: "node /usr/local/bin/codex", betweenName: "MainThread",
-        facts: { 150: facts({ exe }) } });
+        facts: { 150: exe === null ? null : facts({ exe }) } });
       const result = await w.service.restartInPlace({ seatRef: SEAT, plan: true });
-      expect(result).toMatchObject(exe.endsWith("/node")
+      expect(result).toMatchObject(exe?.endsWith("/node")
         ? { ok: true, paneShape: "shell_backed" }
         : { ok: false, code: "pane_shape_unknown" });
       expect(w.calls).toEqual([]);
