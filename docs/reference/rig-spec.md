@@ -526,8 +526,8 @@ only the stored `env:`. Seats may share a home. Live usage refresh (`rig provide
 daemon's own logins; reading each seat's home would need a native reader per home. OpenRig doesn't copy logins or conversation history between homes, so a conversation saved under a seat's earlier home
 doesn't resume after the seat moves to another one. The `openrig-user` skill has the setup steps.
 
-**Switching to an isolated account home.** A live Codex or Claude Code seat can select a different native account
-home without being removed from its rig:
+**Switching to an isolated account home.** A running Codex or Claude Code seat can change its native account home
+while staying in its rig:
 
 ```sh
 rig provider switch --seat dev-impl@my-rig --to-account api-account \
@@ -536,14 +536,16 @@ rig seat set-runtime dev-impl@my-rig --runtime claude-code \
   --account-home /home/me/accounts/claude-api --model claude-sonnet-4-6 --reason "Codex limit"
 ```
 
-The directory must already exist and hold the selected runtime's own login or API settings. The caller chooses the
-account and budget; OpenRig does not choose or create credentials. `--account-home` selects `CODEX_HOME` for Codex or
-`CLAUDE_CONFIG_DIR` for Claude Code, including before the successor starts. It also permits a successor on the same
-runtime. Unlike the existing subscription-login switch, this mode starts a **fresh conversation with a handover**.
-The successor confirms before its home, runtime, model, profile and permission selection commit together. The seat's
-address, edges, queue rows and claims remain. A pre-cutover refusal leaves the predecessor's configuration unchanged.
+The directory must already exist and contain the runtime's login or API settings. You choose the account and budget;
+OpenRig does not choose or create credentials. `--account-home` sets `CODEX_HOME` for Codex or `CLAUDE_CONFIG_DIR` for
+Claude Code before the successor starts.
 
-For a Claude plan authenticated with `setup-token`, select its token-file reference with its home:
+This switch starts a fresh conversation with a handover, even when the runtime stays the same. The existing
+subscription-login switch preserves the conversation. Once the successor confirms, OpenRig commits its home, runtime,
+model, profile and permission selection together. The seat keeps its address, edges, queue rows and claims. If OpenRig
+refuses the switch before cutover, the predecessor's configuration stays unchanged.
+
+For a Claude plan authenticated with `setup-token`, supply the token file with the home:
 
 ```sh
 rig provider switch --seat dev-impl@my-rig --to-account claude-plan \
@@ -552,7 +554,7 @@ rig provider switch --seat dev-impl@my-rig --to-account claude-plan \
 # Across runtimes, use set-runtime with --account-home, --token-file and --account-label.
 ```
 
-Return to the seat's configured login selection explicitly:
+To return to the seat's configured login:
 
 ```sh
 rig provider switch --seat dev-impl@my-rig --clear-account-home --reason "The plan reset" --dry-run
@@ -560,41 +562,46 @@ rig provider switch --seat dev-impl@my-rig --clear-account-home --reason "The pl
 # Across runtimes: rig seat set-runtime dev-impl@my-rig --runtime claude-code --clear-account-home --reason "Return to configured login"
 ```
 
-The clear uses the same successor-first switch and starts a fresh conversation with a handover. It removes the stored
-account-home override and its associated token reference only after confirmation. Before it starts, the successor uses
-the member's or rig's configured home, then the daemon's selection, then the native default, just as an ordinary launch
-does. An unrelated legacy per-seat token is preserved when there was no account-home override. This returns to the
-configuration in force now; it does not restore historical credential bytes or remember a prior login. Use clear on its
-own, without `--to-account`, `--stored-login`, `--account-home` or a new token reference.
+Clearing the selection also starts a successor with a fresh conversation and a handover. OpenRig removes the saved
+account-home override and its token reference only after the successor confirms. The successor starts with the member's
+or rig's configured home, falling back to the daemon's selection and then the native default, as an ordinary launch does.
+If there was no account-home override, OpenRig preserves any unrelated legacy per-seat token. Clear uses the current
+configuration; it does not remember a prior login or restore old credentials. Use clear on its own, without
+`--to-account`, `--stored-login`, `--account-home` or a new token reference.
 
-**Anthropic profile limitation.** An isolated Claude launch removes `ANTHROPIC_PROFILE`,
-`ANTHROPIC_FEDERATION_RULE_ID` and `ANTHROPIC_ORGANIZATION_ID` from its inherited environment, and refuses profile
-selectors in the selected home's or project's settings `env` blocks. An active or default profile in Anthropic's own
-configuration directory can still override a stored Claude login: `CLAUDE_CONFIG_DIR` does not isolate that directory.
-OpenRig does not change `ANTHROPIC_CONFIG_DIR` or rewrite global profiles. Check or deselect that profile yourself before
-using stored-login account homes, and verify the running account privately. An explicit subscription token has higher
-precedence than these profile selectors; the legacy subscription-token switch retains that precedence.
+**Anthropic profile limitation.** An active or default profile in Anthropic's configuration directory can override a
+stored Claude login. `CLAUDE_CONFIG_DIR` does not isolate that directory, and OpenRig does not change `ANTHROPIC_CONFIG_DIR`
+or rewrite global profiles. Check or deselect the profile before using a stored-login account home, and verify the
+running account privately.
 
-Only the token's label and file path enter OpenRig. Its launch reads the token; if the required file becomes unusable,
-no agent starts. An API-home selection without `--token-file` clears an older seat token reference at commit. Its own
-API helper may stay in that home's user settings. A selected plan token refuses a home whose API helper or credential
-environment would outrank it; either mode refuses project credential overrides. OpenRig does not edit those settings.
+An isolated Claude launch removes `ANTHROPIC_PROFILE`, `ANTHROPIC_FEDERATION_RULE_ID` and `ANTHROPIC_ORGANIZATION_ID`
+from its inherited environment. It also refuses profile selectors in the selected home's or project's settings `env`
+blocks. An explicit subscription token takes precedence over these selectors, including in the legacy
+subscription-token switch.
 
-The selected home persists across managed launches and restores. Those launches exclude inherited Claude/OpenAI
-provider credentials and routing environment, so daemon or shell credentials cannot shadow the selected home. An
-unreadable stored selection or a shell unable to enforce isolation fails closed. Existing home-less launches and
-subscription-login switches keep their behavior; a Claude seat using account-home mode selects later accounts through
-that mode too. User-managed provider settings can still affect authentication: after a real tool turn, check the
-runtime's account/billing identity without printing tokens or its environment. A configured home is not verification
-of the account a running process used.
+OpenRig receives only the token's label and file path. The launch reads the token; if the required file is unusable, no agent
+starts. Selecting an API home without `--token-file` clears an older seat token reference when the selection commits.
+The home's API helper can stay in its user settings. For a selected plan token, OpenRig refuses a home whose API helper
+or credential environment would take precedence over that token. Both modes refuse project credential overrides.
+OpenRig leaves those settings unchanged.
 
-Before downgrading to a version without account-home switching, stop the managed seats and reselect their accounts
-using that version's supported setup before resuming. Older readers ignore the new selection and may otherwise launch
-on inherited or default credentials; rolling back only the binary does not preserve the selected billing account.
+The selected home persists across managed launches and restores. These launches exclude inherited Claude/OpenAI
+credentials and routing variables so credentials from the daemon or shell cannot override the selected home. OpenRig
+refuses to launch if it cannot read the saved selection or the shell cannot enforce isolation. Launches without a home
+selection and existing subscription-login switches keep their behavior. A Claude seat using account-home mode must
+use that mode for later account changes too.
 
-The imported team file is not rewritten, and exported/reimported teams do not carry this native account-home isolation
-mode. Configure a new rig explicitly. An interrupted switch is inspected with `rig seat status`; use its printed
-recovery command and do not launch another switch while the outcome is unknown.
+User-managed provider settings can still affect authentication. After a real tool turn, check which account and billing
+identity the runtime used. Do not print tokens or the process environment. The configured home alone cannot verify the
+running account.
+
+Before downgrading to a version without account-home switching, stop the managed seats. Select their accounts using
+that version's supported setup before resuming. Older versions ignore the saved selection and may launch with inherited
+or default credentials. Rolling back the binary alone does not preserve the selected billing account.
+
+OpenRig leaves the imported team file unchanged. Exporting and reimporting a team does not preserve account-home
+isolation, so configure it explicitly for each new rig. If a switch is interrupted, inspect it with `rig seat status`
+and follow the printed recovery command. Wait until the outcome is known before starting another switch.
 
 **Do not put secrets in `env:` or `--env`.** The values are not secret, and nothing here encrypts or hides them (see #306):
 
