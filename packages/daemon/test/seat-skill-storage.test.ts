@@ -305,6 +305,30 @@ describe("rig down removes only what OpenRig wrote into a seat's storage, and ke
     expect(existsSync(join(home, "state", "seats", "rig-1"))).toBe(false);
   });
 
+  it("keeps a copy whose source has changed or gone since, so the restore comes back with the copy the seat had", () => {
+    const { paths, src, write } = seat();
+    write("review-pr/SKILL.md", "v1");
+    write("queue-handoff/SKILL.md", "skill");
+    writeFileSync(join(src, "review-pr/SKILL.md"), "v2");
+    rmSync(join(src, "queue-handoff"), { recursive: true });
+    const changed = join(paths.skillsRoot, "review-pr/SKILL.md");
+    const gone = join(paths.skillsRoot, "queue-handoff/SKILL.md");
+    const down = cleanSeatSkills(paths);
+    expect(down.removed).toEqual([]);
+    expect(down.kept).toEqual([gone, changed]);
+    expect(rehydrateSeatSkills(paths)).toEqual({ restored: [], kept: [], missing: [], refused: [] });
+    expect(readFileSync(changed, "utf8")).toBe("v1");
+    expect(readFileSync(gone, "utf8")).toBe("skill");
+  });
+
+  it("removes a copy whose source has changed once the rig itself is deleted, as nothing will restore it", () => {
+    const { paths, src, write } = seat();
+    write("review-pr/SKILL.md", "v1");
+    writeFileSync(join(src, "review-pr/SKILL.md"), "v2");
+    expect(cleanSeatSkills(paths, { dropRecords: true })).toEqual({ removed: [join(paths.skillsRoot, "review-pr/SKILL.md")], kept: [], refused: [] });
+    expect(existsSync(join(home, "state", "seats", "rig-1"))).toBe(false);
+  });
+
   it("keeps the records when something was kept, even when the rig is deleted", () => {
     const { paths, write } = seat();
     write("queue-handoff/SKILL.md", "skill");

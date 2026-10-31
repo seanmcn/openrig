@@ -513,13 +513,34 @@ describe("a Claude seat's launch env, on the launch paths that don't re-resolve 
     mkdirSync(join(target, ".."), { recursive: true });
     writeFileSync(target, "orient\n");
     recordSeatSkillWrite(seat.skillsRoot, target, src, "orient\n");
-    // rig down (inside run) removes the unchanged copy; the source changes before the restore.
+    // The copy is lost outside rig down, and the source changes before the restore.
+    rmSync(target);
     writeFileSync(src, "today's bytes\n");
     const result = await h.run();
     expect(existsSync(target)).toBe(false);
     expect(result).toMatchObject({ ok: true, result: { rigResult: "partially_restored", nodes: [{ logicalId: "test.c", status: "fresh-primed" }] } });
     expect(JSON.stringify((result as { result: { nodes: unknown[] } }).result.nodes)).not.toContain('"error"');
     expect(JSON.stringify(result)).toContain(`${target} not installed again: its recorded source is gone or has changed`);
+  }, 30_000);
+
+  it("fresh restore, end to end: a copy whose recorded source has changed comes back as the seat had it", async () => {
+    const src = join(root, "src-fresh3", "orient", "SKILL.md");
+    mkdirSync(join(src, ".."), { recursive: true });
+    writeFileSync(src, "orient\n");
+    const file = { path: "skills/orient/SKILL.md", absolutePath: src, ownerRoot: join(root, "src-fresh3"), deliveryHint: "skill_install", required: false, appliesOn: ["fresh_start", "restore"] };
+    const h = restoreHarness([], undefined, { fresh: true, files: [file], realFs: true });
+    const seat = seatSkillPaths({ rigId: h.rigId, logicalId: "test.c", runtime: "claude-code" });
+    ensureSeatSkillPlugin(seat);
+    const target = join(seat.skillsRoot, "orient", "SKILL.md");
+    mkdirSync(join(target, ".."), { recursive: true });
+    writeFileSync(target, "orient\n");
+    recordSeatSkillWrite(seat.skillsRoot, target, src, "orient\n");
+    // The source changes while the seat runs; rig down (inside run) keeps the copy, as restore can't rebuild it.
+    writeFileSync(src, "today's bytes\n");
+    const result = await h.run();
+    expect(readFileSync(target, "utf8")).toBe("orient\n");
+    expect(JSON.stringify((result as { result: { nodes: unknown[] } }).result.nodes)).not.toContain('"error"');
+    expect(JSON.stringify(result)).not.toContain(`${target} not installed again`);
   }, 30_000);
 
   it("restore: a seat whose saved selection doesn't include the plugin doesn't get it, and keeps its own list", async () => {
