@@ -496,6 +496,11 @@ function recordedSeatSkillFiles(paths: SeatSkillPaths): Map<string, { sha256: st
   return out;
 }
 
+/** Whether a recorded file's source still has the recorded bytes, which is when `rehydrateSeatSkills` can rebuild it. */
+function sourceHasRecordedBytes(entry: { sha256: string; source: string }): boolean {
+  try { return sha256(fs.readFileSync(entry.source)) === entry.sha256; } catch { return false; }
+}
+
 /** Whether OpenRig has a record of writing this seat's skills (so a restore can rebuild its storage). */
 export function hasSeatSkillRecords(paths: SeatSkillPaths): boolean {
   return fs.existsSync(paths.manifestPath) || fs.existsSync(paths.projectionsPath);
@@ -504,7 +509,8 @@ export function hasSeatSkillRecords(paths: SeatSkillPaths): boolean {
 export interface SeatSkillCleanup {
   /** Files OpenRig wrote and that were still exactly as written: removed. */
   removed: string[];
-  /** Files edited since OpenRig wrote them, or never recorded as OpenRig's (generated ones included): kept. */
+  /** Files edited since OpenRig wrote them, never recorded as OpenRig's (generated ones included), or that a restore
+   *  couldn't rebuild because their source has changed or gone: kept. */
   kept: string[];
   /** Recorded files no longer inside the seat's storage (a link on the way): left alone. */
   refused: string[];
@@ -514,7 +520,9 @@ export interface SeatSkillCleanup {
  * Remove what OpenRig wrote into a seat's skills once the seat's consumers have stopped: only recorded files whose
  * bytes still match the record, and the generated plugin's manifest, so nothing points at the storage. Edited and
  * unrecorded files are kept and reported. The records themselves stay, unless `dropRecords` (the rig is deleted), so a
- * later restore can rebuild the seat's skills from their sources.
+ * later restore can rebuild the seat's skills from their sources. A file that restore couldn't rebuild (its source no
+ * longer has the recorded bytes) is kept too, so the seat comes back with the copy it had; once the rig is deleted,
+ * nothing will restore it, and it goes like the rest.
  */
 export function cleanSeatSkills(paths: SeatSkillPaths, opts: { dropRecords?: boolean } = {}): SeatSkillCleanup {
   const out: SeatSkillCleanup = { removed: [], kept: [], refused: [] };
@@ -525,7 +533,8 @@ export function cleanSeatSkills(paths: SeatSkillPaths, opts: { dropRecords?: boo
     if (!lexists(file)) continue;
     if (!insideSeatStorage(paths.root, file)) { out.refused.push(file); continue; }
     try {
-      if (sha256(fs.readFileSync(file)) === entry.sha256 && removeInsideSeatStorage(paths.root, file)) { out.removed.push(file); removedFiles.push(file); }
+      if (sha256(fs.readFileSync(file)) === entry.sha256 && (opts.dropRecords || sourceHasRecordedBytes(entry))
+        && removeInsideSeatStorage(paths.root, file)) { out.removed.push(file); removedFiles.push(file); }
       else out.kept.push(file);
     } catch { out.kept.push(file); }
   }
