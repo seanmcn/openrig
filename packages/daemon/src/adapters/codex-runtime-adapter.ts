@@ -73,6 +73,7 @@ import { listNativeProcesses, observeCodexPaneProcess, observeCodexForkProcess, 
 import { recordUnchangedSeatSkillFollowing, recordSeatSkillFollowing, recordSeatSkillWrite, seatPluginSkillsLossNote, seatProjectionComplete, seatSkillWriteRefusal, SEAT_SKILLS_BOOTSTRAP_BLOCK_ID } from "../domain/seat-skill-storage.js";
 import { codexPluginContentHash, planOwnedCodexContentApproval, recordOwnedCodexApproval } from "../domain/codex-owned-plugin-trust.js";
 import { findTomlTable, opensTomlTable, parseTomlRoot, tomlArrayTableHeaderPath, tomlDefines, tomlTableHeaderPath } from "../domain/toml-tables.js";
+import { ensureCodexDeclaredPlugins, type DeclaredPluginOutcome } from "../domain/codex-declared-plugins.js";
 
 // Shared by all probes of ONE launch, never reset by a delayed screen or an
 // ambiguous transport result. A separately requested launch gets a new attempt.
@@ -199,6 +200,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private resolveCorePluginDir?: () => string | undefined;
   // Whether a node's resolved plugin selection includes openrig-core (the test that also gives it OPENRIG_SEAT_PROJECT_DIR).
   private resolveCorePluginSelected?: (nodeId: string) => boolean;
+  // The declared plugins a node runs the hooks of (`run_hooks: true`), and OpenRig's marketplace folder for them.
+  private resolveHookPluginDirs?: (nodeId: string) => string[];
+  private declaredPluginsRoot?: string;
   private runCodexCli: CodexCliRunner;
   // One Codex config.toml per adapter: launches, the boot step and resume all write it (and Codex's install writes it too),
   // so each of those runs its whole setup under this one lock, one after another.
@@ -249,6 +253,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     resolveCorePluginDir?: () => string | undefined;
     /** Whether the node's resolved plugin selection includes openrig-core. Absent: no launch ever installs it. */
     resolveCorePluginSelected?: (nodeId: string) => boolean;
+    /** The declared plugin folders whose hooks a node runs (`run_hooks: true`). Absent: none is ever installed. */
+    resolveHookPluginDirs?: (nodeId: string) => string[];
+    /** OpenRig's marketplace folder for declared plugins. Absent: none is ever installed. */
+    declaredPluginsRoot?: string;
     runCodexCli?: CodexCliRunner;
     /** Where Codex's system and legacy managed config files live (default /etc/codex). */
     codexSystemConfigDir?: string;
@@ -259,6 +267,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.managedBlockRecords = deps.managedBlockRecords;
     this.resolveCorePluginDir = deps.resolveCorePluginDir;
     this.resolveCorePluginSelected = deps.resolveCorePluginSelected;
+    this.resolveHookPluginDirs = deps.resolveHookPluginDirs;
+    this.declaredPluginsRoot = deps.declaredPluginsRoot;
     this.runCodexCli = deps.runCodexCli ?? defaultCodexCli;
     this.codexSystemConfigDir = deps.codexSystemConfigDir ?? "/etc/codex";
     this.tmux = deps.tmux;
@@ -389,6 +399,38 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         console.error(`[openrig] runtime setup warning: ${(err as Error).message}`);
       }
     });
+  }
+
+  /**
+   * Boot step: install or refresh the declared plugins any Codex seat runs the hooks of, in the daemon's Codex home, when
+   * hooks are enabled. A seat with its own Codex home gets them there at its launch.
+   */
+  async ensureCodexDeclaredPluginsAtBoot(dirs: readonly string[]): Promise<void> {
+    if (dirs.length === 0 || !this.resolveHooksEnabled) return;
+    const resolveHooksEnabled = this.resolveHooksEnabled;
+    await this.withConfigLock(async () => {
+      try {
+        if (await resolveHooksEnabled()) await this.ensureCodexDeclaredPlugins(dirs);
+      } catch (err) {
+        console.error(`[openrig] runtime setup warning: ${(err as Error).message}`);
+      }
+    });
+  }
+
+  /** Install, refresh and approve these declared plugins in a Codex home (the daemon's, or `home`). Run under the config
+   *  lock. Each plugin that isn't current is reported. */
+  async ensureCodexDeclaredPlugins(dirs: readonly string[], home?: string): Promise<DeclaredPluginOutcome[]> {
+    if (!this.declaredPluginsRoot) return [];
+    const configPath = this.resolveCodexConfigPath(home);
+    const outcomes = await ensureCodexDeclaredPlugins(dirs, {
+      fs: this.fs, runCodexCli: this.runCodexCli, codexHome: nodePath.dirname(configPath), configPath,
+      systemConfigDir: this.codexSystemConfigDir, marketplaceRoot: this.declaredPluginsRoot, launchPath: this.launchPath,
+      upsertTrust: upsertCodexHookTrust,
+    });
+    for (const result of outcomes) {
+      if (result.outcome !== "current") console.error(`[openrig] codex declared plugin ${result.name ?? result.dir} ${result.outcome}: ${result.reason}`);
+    }
+    return outcomes;
   }
 
   /**
@@ -1084,6 +1126,15 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       if (opts.installCorePlugin && managed?.hooksEnabled && this.resolveCorePluginSelected?.(binding.nodeId)) {
         try { await this.ensureCodexCorePlugin(home); }
         catch (err) { console.error(`[openrig] runtime setup warning: ${(err as Error).message}`); }
+      }
+      // Declared plugins that run their hooks are installed or refreshed on every launch, a resume too, so a seat restored
+      // after its plugin's source changed runs the new hooks (codex-declared-plugins.ts).
+      if (managed?.hooksEnabled) {
+        const dirs = this.resolveHookPluginDirs?.(binding.nodeId) ?? [];
+        if (dirs.length > 0) {
+          try { await this.ensureCodexDeclaredPlugins(dirs, home); }
+          catch (err) { console.error(`[openrig] runtime setup warning: ${(err as Error).message}`); }
+        }
       }
     });
     const model = binding.model?.trim();

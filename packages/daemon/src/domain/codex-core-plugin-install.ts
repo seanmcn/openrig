@@ -38,8 +38,9 @@ export type CodexCorePluginEnablement =
 
 const NOT_VISIBLE = "profile, project, session-flag, MDM and cloud-managed config aren't visible to OpenRig";
 
-/** Whether OpenRig may run Codex's install for the plugin, from the layers it can read. */
-export function codexCorePluginEnablement(layers: CodexConfigLayerRead[]): CodexCorePluginEnablement {
+/** Whether OpenRig may run Codex's install for the plugin (openrig-core unless `pluginKey` names another), from the
+ *  layers it can read. */
+export function codexCorePluginEnablement(layers: CodexConfigLayerRead[], pluginKey: string = CODEX_CORE_PLUGIN_KEY): CodexCorePluginEnablement {
   let explicit: { enabled: boolean; layer: string } | undefined;
   let defaultOff: string | undefined;
   for (const layer of layers) {
@@ -51,11 +52,11 @@ export function codexCorePluginEnablement(layers: CodexConfigLayerRead[]): Codex
     const plugins = doc["plugins"];
     if (plugins === undefined) continue;
     if (!isTable(plugins)) return { decision: "unknown", reason: `${layer.name} has a plugins value that isn't a table` };
-    const entry = plugins[CODEX_CORE_PLUGIN_KEY];
+    const entry = plugins[pluginKey];
     if (entry !== undefined) {
-      if (!isTable(entry)) return { decision: "unknown", reason: `${layer.name} has a ${CODEX_CORE_PLUGIN_KEY} value that isn't a table` };
+      if (!isTable(entry)) return { decision: "unknown", reason: `${layer.name} has a ${pluginKey} value that isn't a table` };
       if (entry["enabled"] !== undefined) {
-        if (typeof entry["enabled"] !== "boolean") return { decision: "unknown", reason: `${layer.name} sets ${CODEX_CORE_PLUGIN_KEY}.enabled to a non-boolean` };
+        if (typeof entry["enabled"] !== "boolean") return { decision: "unknown", reason: `${layer.name} sets ${pluginKey}.enabled to a non-boolean` };
         explicit = { enabled: entry["enabled"], layer: layer.name };
       }
     }
@@ -71,32 +72,33 @@ export function codexCorePluginEnablement(layers: CodexConfigLayerRead[]): Codex
   }
   if (explicit) {
     return explicit.enabled
-      ? { decision: "allow", reason: `${CODEX_CORE_PLUGIN_KEY} is explicitly enabled in the ${explicit.layer}` }
-      : { decision: "disabled", reason: `${CODEX_CORE_PLUGIN_KEY} is explicitly disabled in the ${explicit.layer}; it stays disabled` };
+      ? { decision: "allow", reason: `${pluginKey} is explicitly enabled in the ${explicit.layer}` }
+      : { decision: "disabled", reason: `${pluginKey} is explicitly disabled in the ${explicit.layer}; it stays disabled` };
   }
-  if (defaultOff) return { decision: "disabled", reason: `plugins._default disables plugins in the ${defaultOff}; ${CODEX_CORE_PLUGIN_KEY} stays disabled` };
-  return { decision: "allow", reason: `no layer OpenRig can read disables ${CODEX_CORE_PLUGIN_KEY} (${NOT_VISIBLE})` };
+  if (defaultOff) return { decision: "disabled", reason: `plugins._default disables plugins in the ${defaultOff}; ${pluginKey} stays disabled` };
+  return { decision: "allow", reason: `no layer OpenRig can read disables ${pluginKey} (${NOT_VISIBLE})` };
 }
 
-/** The `[marketplaces.openrig]` source recorded in the user config, if any. */
-export function recordedMarketplaceSource(userConfig: string | null): string | null | undefined {
+/** The `[marketplaces.<marketplace>]` source recorded in the user config, if any (OpenRig's own marketplace by default). */
+export function recordedMarketplaceSource(userConfig: string | null, marketplace: string = CODEX_CORE_MARKETPLACE): string | null | undefined {
   if (userConfig === null) return undefined;
   let doc: Record<string, unknown>;
   try { doc = parseToml(userConfig) as Record<string, unknown>; } catch { return null; }
   const marketplaces = doc["marketplaces"];
   if (!isTable(marketplaces)) return undefined;
-  const entry = marketplaces[CODEX_CORE_MARKETPLACE];
+  const entry = marketplaces[marketplace];
   if (entry === undefined) return undefined;
   return isTable(entry) && typeof entry["source"] === "string" ? entry["source"] : null;
 }
 
-/** Whether the user config sets an explicit `enabled = true` for the plugin (what Codex's install writes there). */
-export function userLayerEnablesCorePlugin(userConfig: string | null): boolean {
+/** Whether the user config sets an explicit `enabled = true` for the plugin (what Codex's install writes there),
+ *  openrig-core unless `pluginKey` names another. */
+export function userLayerEnablesCorePlugin(userConfig: string | null, pluginKey: string = CODEX_CORE_PLUGIN_KEY): boolean {
   if (userConfig === null) return false;
   let doc: Record<string, unknown>;
   try { doc = parseToml(userConfig) as Record<string, unknown>; } catch { return false; }
   const plugins = doc["plugins"];
-  const entry = isTable(plugins) ? plugins[CODEX_CORE_PLUGIN_KEY] : undefined;
+  const entry = isTable(plugins) ? plugins[pluginKey] : undefined;
   return isTable(entry) && entry["enabled"] === true;
 }
 
