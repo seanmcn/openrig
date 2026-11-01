@@ -319,7 +319,7 @@ import { RigSpecCodec as PodRigSpecCodec } from "./rigspec-codec.js";
 import { RigSpecSchema as PodRigSpecSchema, VALID_EDGE_KINDS } from "./rigspec-schema.js";
 import { rigPreflight, preflightValidatedSpec } from "./rigspec-preflight.js";
 import { resolveAgentRef, type AgentResolverFsOps, agentSpecAdvisoryWarnings } from "./agent-resolver.js";
-import { resolveAdvisorModel, selectedPluginPaths, type ResolutionResult } from "./profile-resolver.js";
+import { resolveAdvisorModel, selectedHookPlugins, selectedPluginPaths, type ResolutionResult } from "./profile-resolver.js";
 import { resolveNodeConfigAsync, withNodeConfigResolver } from "./profile-resolution-worker.js";
 import { resolveStartup } from "./startup-resolver.js";
 import { isCommunityHarnessRuntime } from "./built-in-runtimes.js";
@@ -2569,6 +2569,7 @@ export class PodRigInstantiator {
       silenceWindowSeconds: configResult.config.activity?.silenceWindowSeconds,
       env: input.envOverride,
       pluginPaths: selectedPluginPaths(configResult.config.selectedResources),
+      hookPlugins: selectedHookPlugins(configResult.config.selectedResources),
     });
     if (!launchResult.ok) {
       return { status: "failed", code: launchResult.code, error: launchResult.message };

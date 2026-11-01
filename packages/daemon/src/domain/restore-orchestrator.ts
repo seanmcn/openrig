@@ -100,6 +100,7 @@ import { communityHarnessOf } from "./built-in-runtimes.js";
 import { communityHarnessStopsRestore } from "./community-harness-presets.js";
 import { seatAdapter } from "../adapters/community-harness-runtime-adapter.js";
 import { pluginPathsOf } from "./claude-core-plugin-env.js";
+import { hookPluginsOf } from "./declared-plugin-hooks.js";
 import { seatLaunchAdditionsForLaunch, systemPromptPendingNoteForNode, type SeatLaunchAdditions } from "./seat-launch-additions.js";
 export { resolveActiveSnapshotSession } from "./active-occupant.js";
 export type { ActiveSnapshotSessionResolution } from "./active-occupant.js";
@@ -1385,7 +1386,8 @@ export class RestoreOrchestrator {
       ...launchOpts,
       ...(selectedHistory ? { expectedNodeId: nodeId, beforeEffect: selectedHistory.beforeNative,
         beforeRegistration: selectedHistory.beforeRegistration } : {}),
-      ...(savedStartup ? { pluginPaths: pluginPathsOf(savedStartup.projectionEntries) } : {}),
+      ...(savedStartup ? { pluginPaths: pluginPathsOf(savedStartup.projectionEntries),
+        hookPlugins: hookPluginsOf(savedStartup.projectionEntries) } : {}),
       ...(onSessionLaunched ? { onSessionRegistered: (sessionId: string) => onSessionLaunched(nodeId, sessionId) } : {}),
     });
     if (!launchResult.ok) {

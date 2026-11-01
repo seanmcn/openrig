@@ -6,7 +6,8 @@ import type { NodeBinding, ResolvedStartupFile, RuntimeAdapter } from "./runtime
 import { resolveConcreteHint } from "./runtime-adapter.js";
 import type { ParsedStartupContext } from "./seat-lifecycle-service.js";
 import { resolveAgentRef, type AgentResolverFsOps } from "./agent-resolver.js";
-import { resolveNodeConfig, selectedPluginPaths, type ResolutionContext } from "./profile-resolver.js";
+import { resolveNodeConfig, selectedHookPlugins, selectedPluginPaths, type ResolutionContext } from "./profile-resolver.js";
+import type { HookPlugin } from "./declared-plugin-hooks.js";
 import { claudeConflictTargetPath, filterProtectedProjections, planProjection, projectionConflictWarnings, type ProjectionPlan } from "./projection-planner.js";
 import { ProjectionManifestStore } from "./projection-manifest-store.js";
 import { isKeptPluginSkill, reconcileSkillLoadout, type SkillLoadout } from "./skill-catalog.js";
@@ -40,6 +41,8 @@ export interface RuntimeSwitchMaterials {
   seatSkills: SeatSkillPaths;
   /** Plugin paths the target's resolved spec selects (what decides its openrig-core plugin, as at launch). */
   pluginPaths: string[];
+  /** The selected plugins that run their hooks (`run_hooks: true`), from the same selection. */
+  hookPlugins: HookPlugin[];
   /** Startup text the successor reads as part of its first turn (its identity first, then send_text files and actions). */
   firstTurn: string;
   /** Startup slash commands a switch does not run, named in the preview. */
@@ -88,6 +91,7 @@ export function planRuntimeSwitchMaterials(input: RuntimeSwitchMaterialsInput): 
   let otherRuntimeSpecSettings: RuntimeSwitchMaterials["dropped"] = [];
   let skillLoadout: SkillLoadout | undefined;
   let pluginPaths: string[] = [];
+  let hookPlugins: HookPlugin[] = [];
 
   if (node.agentRef) {
     if (!input.saved) throw new Error("The seat's saved startup context is missing, so its materials can't be planned for the target runtime.");
@@ -111,6 +115,7 @@ export function planRuntimeSwitchMaterials(input: RuntimeSwitchMaterialsInput): 
     specAdvisor = config.advisor;
     skillLoadout = config.skillLoadout;
     pluginPaths = selectedPluginPaths(config.selectedResources);
+    hookPlugins = selectedHookPlugins(config.selectedResources);
     warnings.push(...(config.skillWarnings ?? []));
     const manifests = new ProjectionManifestStore(input.db);
     const projected = planProjection({ config, collisions: source.collisions, fsOps,
@@ -171,7 +176,7 @@ export function planRuntimeSwitchMaterials(input: RuntimeSwitchMaterialsInput): 
   }
 
   return {
-    settings, dropped, resolvedSpec, plan, files, actions, seatSkills, pluginPaths, notRun, warnings,
+    settings, dropped, resolvedSpec, plan, files, actions, seatSkills, pluginPaths, hookPlugins, notRun, warnings,
     get firstTurn() {
       const texts = postLaunch.flatMap((file) => {
         try { return [`--- Seat material: ${file.path} ---\n${fsOps.readFile(file.absolutePath)}`]; }

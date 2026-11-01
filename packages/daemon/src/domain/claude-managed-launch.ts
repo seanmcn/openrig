@@ -7,6 +7,7 @@ import { publicSeatEnvironment } from "./seat-launch-environment.js";
 import { SEAT_ENV_KEYS_VAR, parseStoredSeatEnv, validateSeatEnvName } from "./seat-env.js";
 import { CLAUDE_PLUGIN_DIRS_ENV, SEAT_NODE_ENV, SEAT_PROJECT_DIR_ENV, seatCorePluginDir } from "./claude-core-plugin-env.js";
 import { seatSkillPluginDirForNode } from "./seat-skill-storage.js";
+import { seatClaudeHookPluginDirs } from "./declared-plugin-hooks.js";
 import { shellQuote } from "../adapters/shell-quote.js";
 import { claudeClassicRendererEnvPrefix } from "../adapters/yolo-mode.js";
 import { parseClaudePermissionModes } from "./permission-drift.js";
@@ -104,6 +105,7 @@ export class ClaudeManagedLaunch {
     // A seat that selected the shipped openrig-core plugin has the plugin variable in its pane (the launch, or a
     // handover's respawned pane, put it there). The session's own name list can predate that, so name it here too.
     if (seatCorePluginDir({ id: nodeId, runtime: "claude-code" }, this.db, undefined, this.pluginsDir)
+      || seatClaudeHookPluginDirs({ id: nodeId, runtime: "claude-code" }, this.db, undefined, this.pluginsDir).length > 0
       || seatSkillPluginDirForNode(this.db, nodeId)
       || (seatLaunchAdditionsForLaunch(this.db, nodeId).additions?.pluginDirs.length ?? 0) > 0) keys.add(CLAUDE_PLUGIN_DIRS_ENV);
     if (session && this.readSessionEnv) {

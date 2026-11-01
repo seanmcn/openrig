@@ -37,6 +37,7 @@ import { CheckpointStore } from "./checkpoint-store.js";
 import { DeliveryGuardError } from "./seat-delivery-guard.js";
 import { heldMessagesNotice } from "./outbox-handler.js";
 import { seatCodexCorePluginDir, seatCorePluginDir, withPluginDirs } from "./claude-core-plugin-env.js";
+import { seatClaudeHookPluginDirs } from "./declared-plugin-hooks.js";
 import { planRuntimeSwitchMaterials, type RuntimeSwitchMaterials, type RuntimeSwitchMaterialsInput, type SwitchRuntime } from "./runtime-switch-materials.js";
 import { terminatePaneInPlace } from "./pane-cutover.js";
 import { inspectStartupStagedText, settleOwnStartupPaste, STARTUP_SUBMIT_CAPTURE_LINES, STARTUP_SUBMIT_RETRIES, waitForClaudeInputBox } from "./startup-submission-evidence.js";
@@ -422,6 +423,7 @@ export class SeatRuntimeSwitchService {
     const targetNode = { id: node.id, runtime: target };
     const corePluginDir = seatCorePluginDir(targetNode, db, materials.pluginPaths, this.deps.pluginsDir);
     const codexCorePluginDir = seatCodexCorePluginDir(targetNode, db, materials.pluginPaths, this.deps.pluginsDir);
+    const hookPluginDirs = seatClaudeHookPluginDirs(targetNode, db, materials.hookPlugins, this.deps.pluginsDir);
     const launcher = new SuccessorSessionLauncher(tmux, this.deps.discoveryRepo, {
       sessionEnv: this.deps.sessionEnv, runtimeSessionEnv: this.deps.runtimeSessionEnv, runtimeAdapters: this.deps.runtimeAdapters,
       tmuxOptionDefaults: this.deps.tmuxOptionDefaults, readinessTimeoutMs: this.deps.readinessTimeoutMs, sleep: this.deps.sleep,
@@ -436,7 +438,7 @@ export class SeatRuntimeSwitchService {
         ...(override.codexPermissions ? { codexPermissions: override.codexPermissions } : {}),
         nonInterruptive: rigRepo.getRigNonInterruptive(node.rigId), launchPosture, ...(permissionMode ? { permissionMode } : {}),
         seatEnv: withPluginDirs({ ...rigRepo.getEffectiveSeatEnv(node.id, ctx.input.accountHome === undefined),
-          ...(ctx.input.accountHome !== undefined ? { [RUNTIME_HOME_VAR[target]]: ctx.input.accountHome } : {}) }, [corePluginDir, target === "claude-code" ? materials.seatSkills.pluginDir : undefined]),
+          ...(ctx.input.accountHome !== undefined ? { [RUNTIME_HOME_VAR[target]]: ctx.input.accountHome } : {}) }, [corePluginDir, ...hookPluginDirs, target === "claude-code" ? materials.seatSkills.pluginDir : undefined]),
         ...((corePluginDir || codexCorePluginDir) && node.cwd ? { seatProjectDir: node.cwd } : {}) },
       onPaneCreated: (pane) => {
         successorPane = pane;

@@ -19,6 +19,7 @@ import { withoutRuntimeHomes } from "./seat-runtime-home.js";
 import { SEAT_NODE_ENV, SEAT_PROJECT_DIR_ENV, seatCodexCorePluginDir, seatCorePluginDir, withPluginDirs } from "./claude-core-plugin-env.js";
 import { seatSkillPluginDirForNode } from "./seat-skill-storage.js";
 import { seatLaunchAdditionsForLaunch } from "./seat-launch-additions.js";
+import { seatClaudeHookPluginDirs, type HookPlugin } from "./declared-plugin-hooks.js";
 import { terminatePaneInPlace, type PaneCutoverTiming } from "./pane-cutover.js";
 
 import type { Session, Binding } from "./types.js";
@@ -52,6 +53,9 @@ interface LaunchOpts {
    *  seat whose selection includes the vendored openrig-core plugin loads it. Without this the node's saved startup
    *  context is read. */
   pluginPaths?: readonly string[];
+  /** The selected plugins that run their hooks (`run_hooks: true`), from the same selection as `pluginPaths`. A Claude
+   *  seat loads each one meant for Claude. Without this the node's saved startup context is read. */
+  hookPlugins?: readonly HookPlugin[];
   /** Launch into this pane of the seat's existing session (named by `sessionName`) instead of a new session: its process
    *  is ended in place and a shell started there, so the pane and its scrollback stay. */
   keepPane?: string;
@@ -200,6 +204,8 @@ export class NodeLauncher {
     // collision, never authority to kill an unmanaged same-name session.
     const specEnv = this.rigRepo.getEffectiveSeatEnv(node.id);
     const corePluginDir = seatCorePluginDir(node, this.db, opts?.pluginPaths, this.pluginsDir);
+    // Declared plugins that run their hooks, after the vendored openrig-core (declared-plugin-hooks.ts).
+    const hookPluginDirs = seatClaudeHookPluginDirs(node, this.db, opts?.hookPlugins, this.pluginsDir);
     // OPR.0.7.0.13 — the seat's own skills, from storage keyed by its rig and logical seat (every launch path).
     const seatSkillDir = seatSkillPluginDirForNode(this.db, node.id);
     // OPR.0.7.0.9: the seat's own plugin folders (copies in its seat storage), after its generated plugin.
@@ -213,7 +219,7 @@ export class NodeLauncher {
       ...this.sessionEnv,
       ...(node.runtime ? this.runtimeSessionEnv[node.runtime] : undefined),
       // A one-off CLAUDE_CONFIG_DIR or CODEX_HOME is left out: a seat's home comes from its stored env: alone.
-      ...seatEnvLaunchVars(withPluginDirs(mergeSeatEnv(specEnv, oneOff && withoutRuntimeHomes(oneOff)), [corePluginDir, seatSkillDir, ...additionPluginDirs])),
+      ...seatEnvLaunchVars(withPluginDirs(mergeSeatEnv(specEnv, oneOff && withoutRuntimeHomes(oneOff)), [corePluginDir, ...hookPluginDirs, seatSkillDir, ...additionPluginDirs])),
       // The launch project of a seat that loads the plugin, so a Claude started elsewhere inside the seat is not taken for it.
       // For a Codex seat it is also the selection signal its plugin hooks check, beside the interpreter they run with.
       [SEAT_PROJECT_DIR_ENV]: corePluginDir || codexCorePluginDir ? sessionCwd : undefined,
