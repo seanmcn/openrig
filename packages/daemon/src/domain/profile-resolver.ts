@@ -14,6 +14,7 @@ import { discoverSkillsForRuntime, findNamedSkillsForRuntime, parseSkillFrontmat
 import { inspectSkillDirectory, resolvePluginSkills, resolveSkillLoadout, type SkillLoadout } from "./skill-catalog.js";
 import { resolvePluginPath } from "./projection-planner.js";
 import { selectedCorePluginDir, vendoredCorePluginDir } from "./claude-core-plugin-env.js";
+import type { HookPlugin } from "./declared-plugin-hooks.js";
 
 // -- Types --
 
@@ -36,6 +37,17 @@ export interface ResolvedResources {
 export function selectedPluginPaths(resources: ResolvedResources): string[] {
   return resources.plugins.map((plugin) =>
     resolvePluginPath((plugin.resource as PluginResource).source.path, plugin.sourcePath));
+}
+
+/** The selected plugins whose hooks the seat runs (`run_hooks: true`): each one's resolved location and the runtimes it
+ *  says it is for. */
+export function selectedHookPlugins(resources: ResolvedResources): HookPlugin[] {
+  return resources.plugins
+    .filter((plugin) => (plugin.resource as PluginResource).runHooks)
+    .map((plugin) => ({
+      path: resolvePluginPath((plugin.resource as PluginResource).source.path, plugin.sourcePath),
+      pluginType: (plugin.resource as PluginResource).pluginType ?? "auto",
+    }));
 }
 
 export interface ResolvedNodeConfig {

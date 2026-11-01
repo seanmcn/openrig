@@ -507,6 +507,7 @@ function normalizePluginResource(raw: Record<string, unknown>): PluginResource {
   if (pluginType === "claude" || pluginType === "codex" || pluginType === "auto") {
     result.pluginType = pluginType;
   }
+  if ((raw["run_hooks"] ?? raw["runHooks"]) === true) result.runHooks = true;
   return result;
 }
 
@@ -549,6 +550,11 @@ function validatePluginResources(entries: Array<Record<string, unknown>>): strin
     const pluginType = entry["plugin_type"] ?? entry["pluginType"];
     if (pluginType !== undefined && pluginType !== "claude" && pluginType !== "codex" && pluginType !== "auto") {
       errors.push(`resources.plugins[${i}].plugin_type: must be "claude" | "codex" | "auto" (got "${String(pluginType)}")`);
+    }
+
+    const runHooks = entry["run_hooks"] ?? entry["runHooks"];
+    if (runHooks !== undefined && typeof runHooks !== "boolean") {
+      errors.push(`resources.plugins[${i}].run_hooks: must be true or false (got ${JSON.stringify(runHooks)})`);
     }
   }
   return errors;

@@ -37,6 +37,8 @@ export interface ProjectionEntry {
    *    and projects only when its runtime-specific manifest is present
    */
   pluginType?: "claude" | "codex" | "auto";
+  /** Plugins only, set when the resource says `run_hooks: true`: the seat runs the plugin's hooks. */
+  runHooks?: true;
   /** Skills only, set when the resource says `on_restore: follow_source`: a restore that keeps the seat's
    *  conversation takes this skill's source as it is then, instead of the saved copy. */
   onRestore?: SkillOnRestore;
@@ -164,8 +166,9 @@ export function planProjection(input: ProjectionInput): PlanResult {
       }
 
       if (catKey === "plugins") {
-        const pluginRes = qr.resource as { pluginType?: "claude" | "codex" | "auto" };
+        const pluginRes = qr.resource as { pluginType?: "claude" | "codex" | "auto"; runHooks?: true };
         entry.pluginType = pluginRes.pluginType ?? "auto";
+        if (pluginRes.runHooks) entry.runHooks = true;
       }
 
       // Guidance-specific
