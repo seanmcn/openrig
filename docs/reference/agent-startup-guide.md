@@ -416,7 +416,9 @@ The AgentSpec and RigSpec allow declaring deterministic environment configuratio
 **Hooks** ship inside plugins: declare the plugin under `resources.plugins[]`. AgentSpec validation refuses
 `resources.hooks`. OpenRig loads one plugin's hooks into a seat itself: the shipped `openrig-core` plugin, for a Claude seat
 that selects it (see [the refocus channel](refocus-channel.md#the-mechanism)). The folder a declared plugin is projected into
-is not one Claude Code or Codex loads, so a plugin of your own does not get its hooks run by that projection.
+is not one Claude Code or Codex loads, so a plugin of your own runs its hooks only when its entry says `run_hooks: true`:
+Claude seats then load it through `CLAUDE_CODE_PLUGIN_DIRS`, and Codex seats get it installed and its hooks approved in
+their Codex home (see [Running a plugin's hooks](agent-spec.md#running-a-plugins-hooks)).
 
 **Runtime resources** (in `resources.runtime_resources`):
 ```yaml
