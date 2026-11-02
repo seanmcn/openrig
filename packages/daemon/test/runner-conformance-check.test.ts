@@ -25,6 +25,25 @@ async function check(args: string[], runnerFlags = "", nodeArgs: string[] = [], 
     return { code: failed.code ?? -1, report: JSON.parse(failed.stdout) };
   }
 }
+// Each check starts every run of its case at once (4b's cells are about fourteen runners, each with its agent, in their
+// own panes), so the five checks vitest runs together can start well over a hundred processes at the same moment. On a
+// loaded machine, or one whose endpoint security inspects every new process, a runner then misses the check's 8 s bound
+// to open its conversation, and the break is reported for the wrong reason. The break checks below take turns two at a
+// time; a check's timeout covers its wait for a turn.
+function takingTurns(slots: number) {
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  return async <T>(run: () => Promise<T>): Promise<T> => {
+    if (active < slots) active++;
+    else await new Promise<void>((resolve) => waiting.push(resolve)); // the finishing check hands over its slot
+    try { return await run(); } finally {
+      const next = waiting.shift();
+      if (next) next(); else active--;
+    }
+  };
+}
+const breakCheckTurn = takingTurns(2);
+
 const failing = (report: Report) => report.results.filter((r) => r.status === "fail")
   .map((r) => `${r.id}: ${r.checks.filter((c) => !c.ok).map((c) => `${c.name} (${c.detail})`).join("; ")}`);
 
@@ -124,13 +143,13 @@ describe.skipIf(!hasTmux)("the runner conformance check", () => {
     ["ignore-unknown", "8", "the unknown request is answered -32601"],
     ["first-input-trim", "9", "the first prompt is the file's bytes, newlines and spaces included"],
   ])("catches %s in case %s", async (broken, id, name) => {
-    const { code, report } = await check(["--cases", id, "--resume", "--first-input"], ` --break ${broken}`);
+    const { code, report } = await breakCheckTurn(() => check(["--cases", id, "--resume", "--first-input"], ` --break ${broken}`));
     const result = report.results.find((r) => r.id === id)!;
     expect(result.status).toBe("fail");
     // A case with several runs (1b's four failed handshakes, 6's three resumes) names each check after its run.
     expect(result.checks.filter((c) => !c.ok).map((c) => c.name)).toContainEqual(expect.stringContaining(name));
     expect(code).toBe(1);
-  }, 90_000);
+  }, 240_000);
 
   // Section 7 bounds a read's wait at 25 s and no lower: OpenRig's read takes 0 to 25 or none. A runner that polls without
   // waiting, and sleeps between reads itself, keeps the contract.
