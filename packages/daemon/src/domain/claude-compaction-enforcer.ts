@@ -1185,7 +1185,11 @@ export class ClaudeCompactionEnforcer {
       this.reconcilePreparations();
     } while (attempt.status === "waiting");
     if (!idle.ok || attempt.status !== "waiting") {
-      const reason = attempt.reason ?? (!idle.ok ? idle.reason : "preparation_incomplete");
+      // The wait was given exactly the time this attempt had left, so its running out is the attempt's deadline,
+      // named as reconcilePreparations names it, whichever clock noticed first.
+      const deadlineReason = this.mapReady(attempt) ? "map_complete_seat_never_idle" : "preparation_incomplete";
+      const reason = attempt.reason ?? (idle.ok ? "preparation_incomplete"
+        : idle.reason === "wait_for_idle_timeout" ? deadlineReason : idle.reason);
       return failed(reason);
     }
     const compact = await this.sendPreparedCompact(input, attempt, opts.skipMap === true);
