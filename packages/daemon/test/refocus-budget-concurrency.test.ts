@@ -250,7 +250,8 @@ describe("refocus: state left by an earlier candidate", () => {
     writeFileSync(file, JSON.stringify({ ...stateOf(f, "s1"), pendingSeq: 3,
       delivering: { token: "left-behind", at: new Date().toISOString(), pendingSeq: 3 } }));
     writeFileSync(`${file}.lock`, "left-behind");
-    const r = await hook(f, "UserPromptSubmit", "s1");
+    // Exercise stale state independently of scheduler latency.
+    const r = await hook(f, "UserPromptSubmit", "s1", { OPENRIG_REFOCUS_BUDGET_MS: "52000" });
     expect(context(r)).toContain("REFOCUS (just compacted");
     expect(stateOf(f, "s1")).toMatchObject({ firedOn: "UserPromptSubmit" });
   }, 20_000);
