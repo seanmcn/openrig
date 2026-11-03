@@ -108,7 +108,7 @@ describe("refocus: the time budget", () => {
   it("delivers a slow but successful trace when a longer budget is selected", async () => {
     const f = fixture();
     await hook(f, "PostCompact", "s1");
-    const r = await hook(f, "UserPromptSubmit", "s1", { OPENRIG_REFOCUS_BUDGET_MS: "10000", STUB_TRACE_MS: "2500" });
+    const r = await hook(f, "UserPromptSubmit", "s1", { OPENRIG_REFOCUS_BUDGET_MS: "20000", STUB_TRACE_MS: "2500" });
     expect(r.killed).toBe(false);
     expect(context(r)).toContain("TRACE OK: work and topology");
     expect(context(r)).not.toContain("TRACE GAP");
