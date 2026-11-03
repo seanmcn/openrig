@@ -1092,17 +1092,23 @@ describe("prompt-blocked outstanding work reaches the configured route", () => {
   });
 
   it("a prompt alert routed to a fallback still records a cleared prompt, so the next blocked episode alerts", async () => {
-    const port = engine([]); const wakes: string[] = [];
-    const { record } = reminder(["sent", "refused", "refused"]);
-    await tick(port, toLead(wakes));
-    const [first] = alerts();
-    repo.routeToFallback(first!.qitemId, "backup@fixture", "lead removed");
-    state = "clear"; await tick(port, toLead(wakes));
-    expect(alerts()).toEqual([]);
-    state = "blocked"; record("refused"); record("refused");
-    await tick(port, toLead(wakes));
-    expect(alerts()).toHaveLength(1);
-    expect(wakes).toEqual(["lead@fixture", "lead@fixture"]);
+    // Keep the next episode strictly after the persisted clear marker.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const port = engine([]); const wakes: string[] = [];
+      const { record } = reminder(["sent", "refused", "refused"]);
+      await tick(port, toLead(wakes));
+      const [first] = alerts();
+      repo.routeToFallback(first!.qitemId, "backup@fixture", "lead removed");
+      vi.setSystemTime(Date.now() + 10);
+      state = "clear"; await tick(port, toLead(wakes));
+      expect(alerts()).toEqual([]);
+      vi.setSystemTime(Date.now() + 10);
+      state = "blocked"; record("refused"); record("refused");
+      await tick(port, toLead(wakes));
+      expect(alerts()).toHaveLength(1);
+      expect(wakes).toEqual(["lead@fixture", "lead@fixture"]);
+    } finally { vi.useRealTimers(); }
   });
 
   it("a reminder that joins a seat's existing prompt alert is named on it, and nothing is sent again", async () => {
