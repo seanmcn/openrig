@@ -27,7 +27,7 @@ async function check(args: string[], runnerFlags = ""): Promise<{ code: number; 
 // Each check starts every run of its case at once (4b's cells are about fourteen runners, each with its agent, in their
 // own panes), so the five checks vitest runs together can start well over a hundred processes at the same moment. On a
 // loaded machine, or one whose endpoint security inspects every new process, a runner then misses the check's 8 s bound
-// to open its conversation, and the break is reported for the wrong reason. The break checks below take turns two at a
+// to open its conversation, and the break is reported for the wrong reason. The break checks below take turns one at a
 // time; a check's timeout covers its wait for a turn.
 function takingTurns(slots: number) {
   let active = 0;
@@ -41,7 +41,7 @@ function takingTurns(slots: number) {
     }
   };
 }
-const breakCheckTurn = takingTurns(2);
+const breakCheckTurn = takingTurns(1);
 
 const failing = (report: Report) => report.results.filter((r) => r.status === "fail")
   .map((r) => `${r.id}: ${r.checks.filter((c) => !c.ok).map((c) => `${c.name} (${c.detail})`).join("; ")}`);
