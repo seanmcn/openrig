@@ -142,14 +142,18 @@ describe("a Claude member's own subscription token (claude_token)", () => {
     const dir = tempDir(), tokenFile = path.join(dir, "dev.token");
     writeFileSync(tokenFile, `${SYNTHETIC}\n`, { mode: 0o600 });
     const step = claudeSeatTokenStep({ label: "dev-sub", tokenFile }, shellQuote);
-    const traced = spawnSync("/bin/sh", ["-xc", `${step} && /bin/sh -c 'printf %s "$CLAUDE_CODE_OAUTH_TOKEN"'; echo traced-after`],
+    const tracedScript = path.join(dir, "traced.sh");
+    writeFileSync(tracedScript, `${step} && /bin/sh -c 'printf %s "$CLAUDE_CODE_OAUTH_TOKEN"'; echo traced-after`);
+    const traced = spawnSync("/bin/sh", ["-x", tracedScript],
       { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
     expect(traced.status, traced.stderr).toBe(0);
     expect(traced.stdout).toBe(`${SYNTHETIC}traced-after\n`);
     expect(traced.stderr).not.toContain(SYNTHETIC);
     expect(traced.stderr).toContain("echo traced-after");
     const missing = claudeSeatTokenStep({ label: "dev-sub", tokenFile: path.join(dir, "missing.token") }, shellQuote, { required: true });
-    const failed = spawnSync("/bin/sh", ["-xc", `${missing}; echo "rc=$?"`], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
+    const failedScript = path.join(dir, "failed.sh");
+    writeFileSync(failedScript, `${missing}; echo "rc=$?"`);
+    const failed = spawnSync("/bin/sh", ["-x", failedScript], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
     expect(failed.stdout).toBe("rc=1\n");
   });
 
