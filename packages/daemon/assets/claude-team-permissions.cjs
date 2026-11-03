@@ -1,5 +1,44 @@
 "use strict";
 
+// Command families used for rig lifecycle, substrate inspection, remote operations and upgrades.
+// These are tool allowances, not containment: node/npm/python/ssh can themselves run arbitrary code.
+const KERNEL_CLAUDE_ALLOW = [
+  "Skill", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch",
+  ...["rig", "tmux", "node", "npm", "git", "ssh", "scp", "rsync", "curl",
+    "uname", "ps", "pgrep", "lsof", "df", "du", "ls", "cat", "head", "tail", "rg", "grep",
+    "find", "stat", "date", "sleep", "mkdir", "cp", "mv", "chmod", "tar", "shasum",
+    "cd", "pwd", "echo", "printf", "wc", "sort", "python", "python3"]
+    .map(command => `Bash(${command}:*)`),
+  "Bash(command -v:*)",
+  // Read-only provider login checks, so the operator can check a chosen team's provider without a prompt.
+  "Bash(claude auth status:*)", "Bash(codex login status:*)",
+  "Read(~/**)",
+];
+
+// Team defaults are command allowances, not containment. A project's test runner can run code.
+// Native deny/ask rules remain in force. The session hook owns generated lifecycle
+// asks so that a help invocation is not caught by an unconditional ask prefix.
+// Team agents run most rig commands without a prompt. The commands that start, stop or remove teams or
+// agents ask, and so do six kept for a person: import (its --instantiate mode launches nodes, and a
+// prefix can't tell its modes apart), seat set-permissions and policy apply under both spellings (an
+// explicit permission choice stays with a person), setup (its --policy option records one, and a prefix
+// can't tell that from ordinary setup), and compact (it replaces a peer's working context). Other rig
+// commands (archive, attach, config set, seat set-model and the like) fall under the Bash(rig:*) allowance.
+const TEAM_CLAUDE_ALLOW = [
+  "Skill", "Read(./**)", "Glob", "Grep", "Bash(rig:*)",
+  ...["pwd", "ls", "cat", "head", "tail", "rg", "grep", "find"].map(command => `Bash(${command}:*)`),
+  ...["npm test", "npm run test", "pnpm test", "pnpm run test", "yarn test", "yarn run test",
+    "bun test", "bun run test", "node --test", "npx vitest", "npx jest", "pytest", "python -m pytest",
+    "python3 -m pytest", "go test", "cargo test", "make test"].map(command => `Bash(${command}:*)`),
+];
+const TEAM_CLAUDE_ASK = [
+  "up", "down", "start", "launch", "restore", "fork", "bootstrap", "create", "add", "remove",
+  "grow", "shrink", "expand", "destroy", "handover", "env down",
+  "daemon start", "daemon stop", "bundle install", "seat launch", "seat stop", "seat handover", "seat restart",
+  "import", "seat set-permissions", "policy apply", "policy permissions apply", "setup", "compact",
+].map(command => `Bash(rig ${command}:*)`);
+
+
 // Session-only Claude PreToolUse helper. The launcher supplies the kernel or team
 // lists; this file never reads or writes a person's permission settings.
 // This is command convenience, not containment (test runners can execute code).
@@ -240,7 +279,7 @@ function decide(command, policy, depth = 0) {
   return prefixes(policy.allow).some(prefix => prefixEnd(tokens, prefix) !== undefined) ? "allow" : undefined;
 }
 
-module.exports = { decide };
+module.exports = { decide, KERNEL_CLAUDE_ALLOW, TEAM_CLAUDE_ALLOW, TEAM_CLAUDE_ASK };
 if (require.main === module) {
   let raw = "";
   process.stdin.setEncoding("utf8");
@@ -249,7 +288,11 @@ if (require.main === module) {
     try {
       const input = JSON.parse(raw);
       if (input.tool_name !== "Bash" || typeof input.tool_input?.command !== "string") return;
-      const policy = JSON.parse(Buffer.from(process.argv[2], "base64").toString("utf8"));
+      const kind = process.argv[2];
+      // Existing running sessions may still pass their encoded launch policy.
+      const policy = kind === "kernel" ? { allow: KERNEL_CLAUDE_ALLOW, ask: [] }
+        : kind === "team" ? { allow: TEAM_CLAUDE_ALLOW, ask: TEAM_CLAUDE_ASK }
+        : JSON.parse(Buffer.from(kind, "base64").toString("utf8"));
       const decision = decide(input.tool_input.command, policy);
       if (decision) process.stdout.write(JSON.stringify({ hookSpecificOutput: {
         hookEventName: "PreToolUse", permissionDecision: decision,
