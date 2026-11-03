@@ -109,6 +109,8 @@ export function parsePiRunnerState(raw: string): PiRunnerState | null {
 // seat's managed models.json instead (their vars are not ambient-forwarded).
 
 export const PI_PROVIDER_ENV_VARS: Record<string, string> = {
+  mistral: "MISTRAL_API_KEY",
+  google: "GEMINI_API_KEY",
   // Forward only the API key for the model's declared provider.
   "openrouter": "OPENROUTER_API_KEY",
   "zai": "ZAI_API_KEY",

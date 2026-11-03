@@ -87,7 +87,7 @@ describe("live seat runtime switch", () => {
 
   const service = (overrides: Partial<ConstructorParameters<typeof SeatRuntimeSwitchService>[0]> = {}) => new SeatRuntimeSwitchService({
     db, rigRepo, sessionRegistry, discoveryRepo: new DiscoveryRepository(db), eventBus, tmuxAdapter: fakeTmux as unknown as TmuxAdapter, queueRepo,
-    runtimeAdapters: { codex: adapter("codex"), "claude-code": adapter("claude-code") },
+    runtimeAdapters: { codex: adapter("codex"), "claude-code": adapter("claude-code"), pi: adapter("pi") },
     occupantInvalidator: new DefaultOccupantInvalidator({ enforcer: { invalidateOccupant: vi.fn() }, contextUsage: { invalidateOccupantSidecar: vi.fn() }, queue: queueRepo }),
     activityOracle: { declareOccupantSwap }, openrigHome: home, readinessTimeoutMs: 1000, confirmPollMs: 1000,
     sleep: async (ms) => { clock += ms; await onSleep?.(); }, now: () => new Date(clock),
@@ -131,6 +131,19 @@ describe("live seat runtime switch", () => {
     predecessorGeneration = sessionRegistry.currentOccupantTenure(node.id)!.generationUuid;
   });
   afterEach(() => { db.close(); fs.rmSync(home, { recursive: true, force: true }); });
+
+  it("switches to Pi and back with a confirmed successor and an isolated account", async () => {
+    const accountHome = path.join(home, "mistral-plan");
+    fs.mkdirSync(accountHome);
+    const svc = service();
+    successorConfirms(svc);
+    expect(await svc.setRuntime({ seatRef: SEAT, runtime: "pi", model: "mistral/devstral-latest", accountHome, reason: "Mistral plan" }))
+      .toMatchObject({ ok: true, changed: true, to: "pi" });
+    expect(rigRepo.getRig((db.prepare("SELECT rig_id FROM nodes WHERE id = ?").get(nodeId) as { rig_id: string }).rig_id)?.nodes.find(n => n.id === nodeId)).toMatchObject({ runtime: "pi", accountHome });
+    expect(await svc.setRuntime({ seatRef: SEAT, runtime: "codex", reason: "Pi allowance ran out" }))
+      .toMatchObject({ ok: true, changed: true, to: "codex" });
+    expect(rigRepo.getRig((db.prepare("SELECT rig_id FROM nodes WHERE id = ?").get(nodeId) as { rig_id: string }).rig_id)?.nodes.find(n => n.id === nodeId)).toMatchObject({ runtime: "codex" });
+  });
 
   it("switches a Codex seat to another account home on the same runtime, committing only after confirmation", async () => {
     const accountHome = path.join(home, "api-account");
@@ -631,9 +644,9 @@ describe("live seat runtime switch", () => {
         guidance: expect.stringMatching(/start it first.*never started.*declare the other runtime.*rig spec.*doesn't carry this seat's edges, settings or queued work/s) });
     });
     it("a seat on another runtime", async () => {
-      db.prepare("UPDATE nodes SET runtime = 'pi' WHERE id = ?").run(nodeId);
+      db.prepare("UPDATE nodes SET runtime = 'omp' WHERE id = ?").run(nodeId);
       expect(await service().setRuntime({ seatRef: SEAT, runtime: "claude-code", reason: "x", dryRun: true }))
-        .toMatchObject({ ok: false, code: "runtime_switch_unsupported", message: expect.stringMatching(/only Codex and Claude Code seats can switch/) });
+        .toMatchObject({ ok: false, code: "runtime_switch_unsupported", message: expect.stringMatching(/only Codex, Claude Code and Pi seats can switch/) });
     });
     it("a target this daemon can't start", async () => {
       expect(await service({ runtimeAdapters: { codex: adapter("codex") } }).setRuntime({ seatRef: SEAT, runtime: "claude-code", reason: "x", dryRun: true }))

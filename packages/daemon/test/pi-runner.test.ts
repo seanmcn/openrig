@@ -1233,3 +1233,31 @@ describe("cursor refresh via get_entries (QA RED, qitem-20260707020922)", () => 
     expect(f.sidecars.at(-1)!.lastEntryId).toBe("e5");
   });
 });
+
+it.each([
+  { errorStatus: 402, errorMessage: "Payment required" },
+  { errorMessage: '429 {"message":"Quota exceeded","code":"insufficient_quota"}' },
+])("keeps Pi at its provider allowance limit through agent_end: %j", failure => {
+  const f = readyCore();
+  f.core.handlePiLine(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", ...failure } }));
+  f.core.handlePiLine(JSON.stringify({ type: "agent_end" }));
+  expect(f.activity.at(-1)).toMatchObject({ hookEvent: "at_limit" });
+  f.core.heartbeat();
+  expect(f.activity.at(-1)).toMatchObject({ hookEvent: "at_limit" });
+});
+
+it("doesn't classify a server failure as a provider allowance limit", () => {
+  const f = readyCore();
+  f.core.handlePiLine(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", errorStatus: 503, errorMessage: "Service unavailable" } }));
+  expect(f.activity.some(event => event.hookEvent === "at_limit")).toBe(false);
+});
+
+it("marks an ambiguous Mistral refusal only after its retries are exhausted", () => {
+  const f = readyCore();
+  const error = 'Status 429 {"message":"Rate limit exceeded","code":"1300"}';
+  f.core.handlePiLine(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", errorStatus: 429, errorMessage: error } }));
+  expect(f.activity.some(event => event.hookEvent === "at_limit")).toBe(false);
+  f.core.handlePiLine(JSON.stringify({ type: "auto_retry_end", success: false, finalError: error }));
+  f.core.handlePiLine(JSON.stringify({ type: "agent_end" }));
+  expect(f.activity.at(-1)).toMatchObject({ hookEvent: "at_limit" });
+});
