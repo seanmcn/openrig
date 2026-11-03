@@ -143,7 +143,7 @@ const COSTS = [
   "A second process runs on the target's account until cutover.",
   "Messages sent to the seat while it switches are held, not typed; rig send says the seat is switching and until when, and they need sending again afterwards.",
   "A failed switch can leave the target runtime's prepared files (its seat storage and projections).",
-  "Codex and Claude Code only, single-pane seats only.",
+  "Codex, Claude Code and Pi only, single-pane seats only.",
 ];
 
 export class SeatRuntimeSwitchService {
@@ -170,8 +170,8 @@ export class SeatRuntimeSwitchService {
   /** Validate and plan a successor-first runtime/account move, executing it under the seat's lifecycle guard unless dry-run. */
   async setRuntime(input: SetRuntimeInput): Promise<SetRuntimeResult> {
     const refuse = (code: string, message: string, guidance?: string): RuntimeSwitchRefusal => ({ ok: false, code, message, ...(guidance ? { guidance } : {}) });
-    if (input.runtime !== "codex" && input.runtime !== "claude-code") {
-      return refuse("invalid_runtime_settings", "Choose --runtime codex or --runtime claude-code.");
+    if (input.runtime !== "codex" && input.runtime !== "claude-code" && input.runtime !== "pi") {
+      return refuse("invalid_runtime_settings", "Choose --runtime codex, --runtime claude-code or --runtime pi.");
     }
     const target: SwitchRuntime = input.runtime;
     if (input.clearAccountHome !== undefined && typeof input.clearAccountHome !== "boolean") return refuse("invalid_runtime_settings", "clearAccountHome must be true or false.");
@@ -226,8 +226,8 @@ export class SeatRuntimeSwitchService {
           : open.phase === "abandoned" ? "whose staged successor hasn't been retired" : "in progress"} (${open.from_runtime} → ${open.to_runtime}, switch ${open.id}).`,
         `Inspect it with rig seat status ${seatRef}; finish an interrupted one with rig seat set-runtime ${seatRef} --recover.`), switchId: open.id };
     }
-    if (node.runtime !== "codex" && node.runtime !== "claude-code") {
-      return refuse("runtime_switch_unsupported", `${seatRef} runs ${node.runtime ?? "an unknown runtime"}; only Codex and Claude Code seats can switch.`);
+    if (node.runtime !== "codex" && node.runtime !== "claude-code" && node.runtime !== "pi") {
+      return refuse("runtime_switch_unsupported", `${seatRef} runs ${node.runtime ?? "an unknown runtime"}; only Codex, Claude Code and Pi seats can switch.`);
     }
     const binding = sessionRegistry.getBindingForNode(node.id);
     const sessionName = binding?.tmuxSession ?? null;

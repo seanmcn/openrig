@@ -765,3 +765,10 @@ describe("durable catch-up cursor survives launch-attempt resets", () => {
     }
   });
 });
+
+it.each([["mistral", "MISTRAL_API_KEY"], ["google", "GEMINI_API_KEY"]])("passes only %s's key to Pi", (provider, variable) => {
+  const env = buildPiChildEnv({ MISTRAL_API_KEY: "m-key", GEMINI_API_KEY: "g-key", ANTHROPIC_API_KEY: "a-key" },
+    { agentDir: "/a", sessionsDir: "/s", model: `${provider}/model` });
+  expect(env[variable]).toBe(provider === "mistral" ? "m-key" : "g-key");
+  expect(Object.keys(env).filter(key => key.endsWith("API_KEY"))).toEqual([variable]);
+});

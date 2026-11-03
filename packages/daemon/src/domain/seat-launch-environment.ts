@@ -154,6 +154,7 @@ export class SeatLaunchEnvironment {
       const env = publicSeatEnvironment({ OPENRIG_TRANSCRIPTS_LINES: "", OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS: "", ...this.sessionEnv, ...identity });
       if (target.codexCwd !== undefined && codexHome) env.CODEX_HOME = codexHome;
       if (accountHome && target.runtime === "claude-code") env.CLAUDE_CONFIG_DIR = accountHome;
+      if (accountHome && target.runtime === "pi") env.PI_CODING_AGENT_DIR = accountHome;
       // Classic Claude may be an rc alias or function, not a PATH executable.
       // Its caller sources the staged command in a pane-shell subshell. Leading
       // assignments preserve shell lookup; /usr/bin/env would bypass it.
