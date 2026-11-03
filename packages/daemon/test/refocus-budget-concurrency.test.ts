@@ -47,6 +47,10 @@ esac
   writeFileSync(join(bin, "trace"), `#!/bin/sh
 [ -n "$STUB_TRACE_PARTIAL" ] && echo "$STUB_TRACE_PARTIAL"
 ${sleep("STUB_TRACE_MS")}
+if [ -n "$STUB_TRACE_GATE" ]; then
+  echo ready > "$STUB_TRACE_GATE.ready"
+  while [ ! -f "$STUB_TRACE_GATE" ]; do sleep 0.02; done
+fi
 echo "TRACE OK: work and topology"
 `);
   chmodSync(join(bin, "rig"), 0o755);
@@ -139,7 +143,8 @@ describe("refocus: the time budget", () => {
     await hook(f, "PostCompact", "s1");
     const r = await hook(f, "UserPromptSubmit", "s1", { STUB_TRACE_MS: "2500" }, 5_000);
     expect(r.killed).toBe(false);
-    expect(r.ms).toBeLessThan(3_500);
+    // The 2.5 s trace must time out, but Node startup is outside that cap.
+    expect(r.ms).toBeLessThan(5_000);
     expect(context(r)).toMatch(/TRACE GAP — spawnSync .* ETIMEDOUT/);
     expect(stateOf(f, "s1")).toMatchObject({ pendingOn: "PostCompact" });
   }, 20_000);
@@ -210,10 +215,18 @@ describe("refocus: overlapping events for one occupant (UNRESOLVED; characterize
     await hook(f, "UserPromptSubmit", "s1", { OPENRIG_REFOCUS_NOW: "1" });
     const file = join(f.home, "refocus", `${SEAT}__s1.json`);
     writeFileSync(file, JSON.stringify({ ...stateOf(f, "s1"), pendingOn: "Stop", pendingAt: "2026-10-18T17:00:00.000Z" }));
-    const delivering = hook(f, "UserPromptSubmit", "s1", { STUB_TRACE_MS: "1500" });
-    await wait(600);
-    await hook(f, "PostCompact", "s1");
-    expect(stateOf(f, "s1")).toMatchObject({ pendingOn: "PostCompact" });
+    const gate = join(f.home, "release-trace");
+    const delivering = hook(f, "UserPromptSubmit", "s1", { STUB_TRACE_GATE: gate, OPENRIG_REFOCUS_BUDGET_MS: "52000" });
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(`${gate}.ready`) && Date.now() < deadline) await wait(20);
+      expect(existsSync(`${gate}.ready`)).toBe(true);
+      await hook(f, "PostCompact", "s1");
+      expect(stateOf(f, "s1")).toMatchObject({ pendingOn: "PostCompact" });
+    } finally {
+      writeFileSync(gate, "continue");
+      await delivering;
+    }
     expect(context(await delivering)).toContain("REFOCUS");
     // The delivery wrote back the state it read before the PostCompact: the compaction's pending is gone.
     expect(stateOf(f, "s1")["pendingOn"]).toBeUndefined();
