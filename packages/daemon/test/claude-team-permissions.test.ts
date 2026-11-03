@@ -182,8 +182,7 @@ describe("Claude team command permissions", () => {
     const dir = mkdtempSync(join(tmpdir(), "claude-hook 'path "));
     try {
       const copy = join(dir, "hook.cjs"); copyFileSync(asset, copy);
-      const encoded = Buffer.from(JSON.stringify(policy)).toString("base64");
-      const result = spawnSync("/bin/sh", ["-c", [process.execPath, copy, encoded].map(shellQuote).join(" ")], {
+      const result = spawnSync("/bin/sh", ["-c", [process.execPath, copy, "team"].map(shellQuote).join(" ")], {
         input: JSON.stringify({ tool_name: "Bash", tool_input: { command: "rig down --help" } }), encoding: "utf8",
       });
       expect(result.status, result.stderr).toBe(0);
