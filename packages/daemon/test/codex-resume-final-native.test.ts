@@ -12,6 +12,7 @@ const run = promisify(exec);
 const runFile = promisify(execFile);
 
 // Controlled provider-shaped output, not an authenticated Codex invocation.
+// Capture counts prove the boundary; wall-clock limits allow cold native process startup.
 // The actual terminal process receives the real production resume command.
 async function finalObservation(output: string) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-final-"));
@@ -43,13 +44,13 @@ async function finalObservation(output: string) {
     const capture = vi.spyOn(adapter, "capturePaneContent").mockImplementation(async (target, lines) => {
       captures++;
       if (captures === 1) {
-        await expect.poll(() => nativeCapture(target, lines), { timeout: 5000 }).toContain("fixture waiting for final observation");
+        await expect.poll(() => nativeCapture(target, lines), { timeout: 10000 }).toContain("fixture waiting for final observation");
       }
       if (captures === 27) {
         // The default budget has 26 loop observations plus one final read.
         // Release output only at that final boundary, avoiding timer races.
         fs.writeFileSync(gate, output);
-        await expect.poll(() => nativeCapture(target, lines), { timeout: 5000 }).toContain(output);
+        await expect.poll(() => nativeCapture(target, lines), { timeout: 10000 }).toContain(output);
       }
       return nativeCapture(target, lines);
     });
@@ -72,22 +73,22 @@ describe.skipIf(process.platform === "win32")("native terminal final Codex resum
   it("retains a late access-token refusal as recoverable attention with evidence", async () => {
     const output = "Your access token could not be refreshed. Please sign in again.";
     expect(await finalObservation(output)).toMatchObject({ ok: false, code: "attention_required", evidence: expect.stringContaining(output) });
-  }, 15_000);
+  }, 40_000);
 
   it("retains a late incompatible-client notice as recoverable attention", async () => {
     const output = "This model requires a newer version of Codex.";
     expect(await finalObservation(output)).toMatchObject({ ok: false, code: "attention_required", evidence: expect.stringContaining(output) });
-  }, 15_000);
+  }, 40_000);
 
   it("retains a late missing saved session as a fresh-retry outcome", async () => {
     expect(await finalObservation("Error: No saved session found for that token.")).toMatchObject({
       ok: false, code: "retry_fresh", message: "Codex resume failed: no saved session found for the requested token",
     });
-  }, 15_000);
+  }, 40_000);
 
   it("still accepts a ready interactive prompt arriving at the final read", async () => {
     expect(await finalObservation("OpenAI Codex (v0.0.0)\n› Ask Codex to do anything")).toMatchObject({ ok: true });
-  }, 15_000);
+  }, 40_000);
 
   it("keeps the launch for attention while the staging wrapper holds the foreground, never claiming readiness", async () => {
     // The production launch stages this fixture via /bin/sh, so native tmux labels the pane with that wrapper while
@@ -96,5 +97,5 @@ describe.skipIf(process.platform === "win32")("native terminal final Codex resum
       ok: false, code: "attention_required",
       message: "Codex resume could not be verified; launch retained: the pane shows a shell that isn't a proven idle shell, so a launch script may still be starting Codex.",
     });
-  }, 15_000);
+  }, 40_000);
 });
