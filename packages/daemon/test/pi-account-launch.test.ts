@@ -54,4 +54,9 @@ it("preserves the selected account when resuming a Pi seat", async () => {
   }, { stateRoot: root, runnerEntryPath: "/runner.js" }, { seatLaunchEnvironment: launch, newLaunchId: () => "attempt" });
   expect(await adapter.resume("build@rig", "pi_session_file", sessionFile, root, "mistral/devstral-latest")).toMatchObject({ ok: true });
   expect(launched).toContain(`PI_CODING_AGENT_DIR=${account}`);
+  let attempts = 0;
+  tmux.sendShellCommand = async () => { attempts++; return { ok: false, code: "launch_path_too_long", message: "fixture bound" }; };
+  expect(await adapter.resume("build@rig", "pi_session_file", sessionFile, root, "mistral/devstral-latest"))
+    .toMatchObject({ ok: false, code: "resume_failed" });
+  expect(attempts).toBe(1);
 });

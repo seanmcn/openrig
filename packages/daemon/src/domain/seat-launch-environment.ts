@@ -87,6 +87,11 @@ export class SeatLaunchEnvironment {
     private readonly codexHome?: string,
     private readonly selectedAccountHome?: (nodeId: string, runtime: string, ignoreAccountHome?: boolean) => string | undefined) {}
 
+  /** The persisted account selection, also used to decide whether a bare launch fallback is safe. */
+  accountHome(nodeId: string, runtime: string): string | undefined {
+    return this.selectedAccountHome?.(nodeId, runtime);
+  }
+
   private rigBin(): string {
     const cli = realpathSync(this.cliPath ?? pairedCli());
     accessSync(cli, constants.X_OK);
@@ -110,7 +115,7 @@ export class SeatLaunchEnvironment {
     /** A Claude seat's own token step (claude-seat-token.ts), run before Claude in the staged subshell. A POSIX pane only:
      *  a caller whose command comes back without it knows the token wasn't applied. */
     claudeTokenStep?: string } = {}): Promise<string> {
-    const accountHome = target.accountHome !== undefined ? target.accountHome : (target.nodeId && target.runtime ? this.selectedAccountHome?.(target.nodeId, target.runtime) : undefined);
+    const accountHome = target.accountHome !== undefined ? target.accountHome : (target.nodeId && target.runtime ? this.accountHome(target.nodeId, target.runtime) : undefined);
     const clearing = target.accountHome === null;
     const configuredHome = clearing && target.nodeId && target.runtime ? this.selectedAccountHome?.(target.nodeId, target.runtime, true) : undefined;
     const homeVar = RUNTIME_HOME_VAR[target.runtime as HomeRuntime];
