@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { createProgram } from "../src/index.js";
 import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Command } from "commander";
 import { envCommand } from "../src/commands/env.js";
 import { DaemonClient } from "../src/client.js";
@@ -47,6 +50,7 @@ describe("rig env", () => {
   let probeStatus = "fresh";
   let probeError: string | undefined;
   let kept: string | undefined;
+  let syncBody: unknown;
 
   const rigSummary = [{ id: "rig-1", name: "my-rig", nodeCount: 2 }];
 
@@ -59,6 +63,13 @@ describe("rig env", () => {
         if (url === "/api/rigs/summary") {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(rigSummary));
+          return;
+        }
+
+        if (url.endsWith("/seat-env") && req.method === "POST") {
+          syncBody = JSON.parse(body);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ changed: true, applied: !JSON.parse(body).check }));
           return;
         }
 
@@ -124,12 +135,26 @@ describe("rig env", () => {
     return prog;
   }
 
+  it("sync reads only the spec environment and can check without applying", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rig-env-sync-"));
+    const spec = path.join(root, "rig.yaml");
+    try {
+      fs.writeFileSync(spec, "name: my-rig\nenv:\n  PATH: /mise:/bin\npods: []\n");
+      const result = await captureLogs(() => makeCmd().parseAsync([
+        "node", "rig", "env", "sync", "my-rig", "--spec", spec, "--check", "--json",
+      ]).then(() => {}));
+      expect(result.exitCode).toBeUndefined();
+      expect(syncBody).toEqual({ env: { PATH: "/mise:/bin" }, check: true });
+      expect(JSON.parse(result.logs.join(""))).toEqual({ changed: true, applied: false });
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("env help explains services and execution placement", () => {
     const logs: string[] = [];
     const cmd = makeCmd().commands.find((c) => c.name() === "env")!;
     cmd.configureOutput({ writeOut: (str) => logs.push(str), writeErr: (str) => logs.push(str) });
     cmd.outputHelp();
-    const help = logs.join("");
+    const help = logs.join("").replace(/\s+/g, " ");
     expect(help).toContain("Inspect and control rig services");
     expect(help).toContain("for execution placement use rig environment");
     expect(help).toContain("rig env status secrets-manager");

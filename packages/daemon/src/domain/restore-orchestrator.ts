@@ -264,6 +264,10 @@ export interface RestoreOrchestratorDeps {
 export class RestoreOrchestrator {
   readonly db: Database.Database;
   private activeRestores = new Set<string>();
+
+  isRestoring(rigId: string): boolean {
+    return this.activeRestores.has(rigId);
+  }
   private rigRepo: RigRepository;
   private sessionRegistry: SessionRegistry;
   private eventBus: EventBus;
