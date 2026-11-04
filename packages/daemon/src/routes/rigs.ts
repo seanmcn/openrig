@@ -43,8 +43,43 @@ import type { EdgeOpOutcome } from "../domain/rig-edge-ops.js";
 import type { RigLifecycleService } from "../domain/rig-lifecycle-service.js";
 import type { SelfAttachService } from "../domain/self-attach-service.js";
 import { reserveOperation, validOperationId } from "../domain/operation-correlation.js";
+import { normalizeSeatEnv, validateSeatEnv } from "../domain/seat-env.js";
 
 export const rigsRoutes = new Hono();
+
+// Values stay in the request and storage, never in the receipt or diagnostics.
+rigsRoutes.post("/:id/seat-env", async (c) => {
+  const body: unknown = await c.req.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)
+    || !("env" in body) || validateSeatEnv(body.env, "env").length
+    || ("check" in body && typeof body.check !== "boolean")) {
+    return c.json({ error: "Expected env to be a valid seat environment mapping and check to be a boolean" }, 400);
+  }
+  const repo = getRepo(c);
+  const env = normalizeSeatEnv(body.env) ?? {};
+  const check = "check" in body && body.check;
+  const reconcile = async () => {
+    const rig = repo.getRig(c.req.param("id"));
+    if (!rig || !repo.listRigs().some((active) => active.id === rig.rig.id)) {
+      return c.json({ error: "Active rig not found" }, 404);
+    }
+    const stored = repo.getRigEnv(rig.rig.id) ?? {};
+    const changed = Object.keys(env).length !== Object.keys(stored).length
+      || Object.entries(env).some(([key, value]) => stored[key] !== value);
+    if (check || !changed) return c.json({ changed, applied: false });
+    const restore = c.get("restoreOrchestrator" as never) as RestoreOrchestrator | undefined;
+    const inventory = getNodeInventory(repo.db, rig.rig.id);
+    if (restore?.isRestoring(rig.rig.id)
+      || inventory.some((node) => node.sessionStatus !== "stopped" && node.sessionStatus !== "exited")) {
+      return c.json({ error: "Stop every seat before changing its rig environment" }, 409);
+    }
+    repo.setRigEnv(rig.rig.id, env);
+    return c.json({ changed: true, applied: true });
+  };
+  const guard = (c.get("tmuxAdapter" as never) as TmuxAdapter | undefined)?.deliveryGuard;
+  const nodes = repo.getRig(c.req.param("id"))?.nodes ?? [];
+  return !check && guard ? guard.lifecycle(nodes.map(node => node.id), reconcile) : reconcile();
+});
 
 // PL-019 item 5: read-side join helper. Returns map of
 // destination_session → in-progress qitems (capped at MAX_QITEMS_PER_NODE

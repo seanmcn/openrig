@@ -35,6 +35,7 @@ import type { ResumeResult } from "../src/adapters/claude-resume.js";
 import type { PersistedEvent, Snapshot } from "../src/domain/types.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { Hono } from "hono";
+import { rigsRoutes } from "../src/routes/rigs.js";
 import { providerRoutes } from "../src/routes/provider.js";
 import type { ClaudeSeatRelaunch } from "../src/domain/provider/provider-service.js";
 import { buildRestorePlanPreview } from "../src/domain/restore-plan-preview.js";
@@ -212,6 +213,32 @@ describe("RestoreOrchestrator", () => {
     if (!updated) throw new Error("expected updated snapshot");
     return updated;
   }
+
+  it("restores the same conversation with reconciled environment instead of snapshot-era values", async () => {
+    // Regression: https://github.com/axiom-maths/open-rig/issues/254
+    const snap = seedRigAndSnapshot({ nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
+      edges: [], resumeType: "claude_id", resumeToken: "carried-conversation" });
+    rigRepo.setRigEnv(snap.rigId, { PATH: "/old", REMOVED: "old" });
+    for (const session of sessionRegistry.getSessionsForRig(snap.rigId)) sessionRegistry.updateStatus(session.id, "exited");
+    const app = new Hono();
+    app.use("*", async (c, next) => { c.set("rigRepo" as never, rigRepo as never); await next(); });
+    app.route("/api/rigs", rigsRoutes);
+    const update = await app.request(`/api/rigs/${snap.rigId}/seat-env`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ env: { PATH: "/mise:/bin" } }),
+    });
+    expect(update.status).toBe(200);
+    const tmux = mockTmux();
+    const claude = mockClaudeResume();
+    const restored = await createOrchestrator({ tmux, claude,
+      listProcesses: nativeLineage("claude-code", "carried-conversation") }).restore(snap.id);
+    expect(restored.ok, JSON.stringify(restored)).toBe(true);
+    expect(restored.ok && restored.result.nodes[0]?.status).toBe("resumed");
+    expect(vi.mocked(claude.resume).mock.calls[0]?.[2]).toBe("carried-conversation");
+    const env = vi.mocked(tmux.createSession).mock.calls[0]?.[2];
+    expect(env).toMatchObject({ PATH: "/mise:/bin" });
+    expect(env).not.toHaveProperty("REMOVED");
+  });
 
   it("refuses an explicit snapshot for a recreated logical seat before changing state", async () => {
     const snap = seedRigAndSnapshot({ nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }], edges: [],
