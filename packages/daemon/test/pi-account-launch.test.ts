@@ -60,3 +60,18 @@ it("preserves the selected account when resuming a Pi seat", async () => {
     .toMatchObject({ ok: false, code: "resume_failed" });
   expect(attempts).toBe(1);
 });
+
+it("loads operator extensions in each isolated seat without replacing seat extensions", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-extensions-"));
+  roots.push(root);
+  const agent = path.join(root, "seat"), defaults = path.join(root, "defaults");
+  fs.mkdirSync(agent);
+  fs.mkdirSync(path.join(defaults, "extensions"), { recursive: true });
+  fs.writeFileSync(path.join(defaults, "extensions", "guard.ts"), "export default () => {};");
+  fs.writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ extensions: ["./own.ts"], theme: "dark" }));
+  preparePiAgentDirectory(agent, undefined, defaults);
+  const settings = () => JSON.parse(fs.readFileSync(path.join(agent, "settings.json"), "utf8"));
+  expect(settings()).toEqual({ extensions: ["./own.ts", path.join(defaults, "extensions")], theme: "dark" });
+  preparePiAgentDirectory(agent, undefined, defaults);
+  expect(settings().extensions).toHaveLength(2);
+});

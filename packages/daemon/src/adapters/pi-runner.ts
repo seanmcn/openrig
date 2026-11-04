@@ -40,6 +40,23 @@ import {
 /** Prepare per-seat MCP and bind only an explicitly selected account's credential file. */
 export function preparePiAgentDirectory(agentDir: string, accountHome: string | undefined, defaults: string): void {
   fs.mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+  const extensions = nodePath.join(defaults, "extensions");
+  if (nodePath.resolve(agentDir) !== nodePath.resolve(defaults) && fs.existsSync(extensions)) {
+    const settingsPath = nodePath.join(agentDir, "settings.json");
+    let settings: Record<string, unknown>;
+    try { settings = fs.existsSync(settingsPath) ? JSON.parse(fs.readFileSync(settingsPath, "utf8")) : {}; }
+    catch { throw new Error("Pi settings could not be read."); }
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)
+      || (settings.extensions !== undefined && (!Array.isArray(settings.extensions)
+        || !settings.extensions.every(entry => typeof entry === "string")))) {
+      throw new Error("Pi settings need an object with an extensions list.");
+    }
+    const configured = (settings.extensions ?? []) as string[];
+    if (!configured.includes(extensions)) {
+      settings.extensions = [...configured, extensions];
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
+    }
+  }
   const marker = nodePath.join(agentDir, ".openrig-account");
   const auth = nodePath.join(agentDir, "auth.json");
   if (fs.existsSync(marker)) {
