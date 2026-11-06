@@ -36,6 +36,8 @@ process.stdout.write("{}");
       encoding: "utf8", timeout, killSignal: "SIGKILL",
       env: { ...process.env, PATH: nodeRig ? bin : `${bin}:${process.env.PATH}`, OPENRIG_HOME: root,
         OPENRIG_SESSION_NAME: "seat@test", OPENRIG_REFOCUS_ENABLED: "1", OPENRIG_REFOCUS_NOW: "",
+        // These cases test continuation state; subprocess deadlines have their own suite.
+        OPENRIG_REFOCUS_BUDGET_MS: "52000",
         OPENRIG_REFOCUS_CONTENT_REF: "", OPENRIG_REFOCUS_CONTENT_FILE: "", OPENRIG_REFOCUS_TREES: "work",
         OPENRIG_REFOCUS_WORK_NODE: root, OPENRIG_WORKSPACE_ROOT: root,
         PYTHON: trace, TRACE_RESULT: good ? "WORK TRACE: current intent" : "TRACE GAP — fixture resolver unavailable",
@@ -67,7 +69,7 @@ describe("refocus continuation", () => {
     expect(f.run("UserPromptSubmit", boundary)).toBe("");
     expect(f.state()).toEqual(before);
     expect(f.run("UserPromptSubmit", "Restore this session now")).toContain("just compacted");
-    expect(f.state().pendingOn).toBeUndefined();
+    expect(f.state().pendingOn, f.state().pendingFailure).toBeUndefined();
     expect(f.run("UserPromptSubmit")).toBe("");
   });
 
