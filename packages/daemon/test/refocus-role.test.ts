@@ -24,6 +24,8 @@ exit 1
   ] };
   env = { PATH: join(root, "bin") + ":" + process.env.PATH, HOME: root, OPENRIG_HOME: join(root, "rig"), CODEX_HOME: join(root, "codex"),
     CLAUDE_CONFIG_DIR: join(root, "claude"), TMPDIR: root, OPENRIG_SESSION_NAME: "a@test", OPENRIG_REFOCUS_TREES: "both",
+    // Role assertions should not depend on subprocess scheduling under suite load.
+    OPENRIG_REFOCUS_BUDGET_MS: "52000",
     OPENRIG_TOPOLOGY_ROOT: root, OPENRIG_WORKSPACE_ROOT: root, PYTHON: python, CALLS: join(root, "calls"),
     ANSWER: JSON.stringify({ currentWork: { workNodePath: "/work/a" }, role }) };
 });
@@ -60,7 +62,7 @@ it.each([{ ROLE_STATUS: "1" }, { ANSWER: "broken" }, { ANSWER: "{}" }])("reports
 });
 it("skips role lookup when no bounded time remains and still emits an unknown", () => {
   const preload = join(root, "clock.cjs"); writeFileSync(preload, "process.uptime = () => 2.4;");
-  const text = context(run("codex", "UserPromptSubmit", { OPENRIG_REFOCUS_NOW: "1", OPENRIG_REFOCUS_WORK_NODE: "/explicit" }, preload));
+  const text = context(run("codex", "UserPromptSubmit", { OPENRIG_REFOCUS_NOW: "1", OPENRIG_REFOCUS_WORK_NODE: "/explicit", OPENRIG_REFOCUS_BUDGET_MS: "" }, preload));
   expect(text).toContain("Role file: unknown (no budget left)");
   expect(calls()).toEqual([]);
 });
