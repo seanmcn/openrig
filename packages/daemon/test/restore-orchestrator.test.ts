@@ -240,6 +240,35 @@ describe("RestoreOrchestrator", () => {
     expect(env).not.toHaveProperty("REMOVED");
   });
 
+  it("refuses environment changes while a restore is creating its seat", async () => {
+    const snap = seedRigAndSnapshot({ nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }],
+      edges: [], resumeType: "claude_id", resumeToken: "carried-conversation" });
+    rigRepo.setRigEnv(snap.rigId, { PATH: "/old" });
+    for (const session of sessionRegistry.getSessionsForRig(snap.rigId)) sessionRegistry.updateStatus(session.id, "exited");
+    const tmux = mockTmux();
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(tmux.createSession).mockImplementation(async () => { await held; return { ok: true }; });
+    const orch = createOrchestrator({ tmux, listProcesses: nativeLineage("claude-code", "carried-conversation") });
+    const app = new Hono();
+    app.use("*", async (c, next) => {
+      c.set("rigRepo" as never, rigRepo as never);
+      c.set("restoreOrchestrator" as never, orch as never);
+      await next();
+    });
+    app.route("/api/rigs", rigsRoutes);
+    const restoring = orch.restore(snap.id);
+    try {
+      await vi.waitFor(() => expect(tmux.createSession).toHaveBeenCalled());
+      const update = await app.request(`/api/rigs/${snap.rigId}/seat-env`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ env: { PATH: "/new" } }),
+      });
+      expect(update.status).toBe(409);
+      expect(rigRepo.getRigEnv(snap.rigId)).toEqual({ PATH: "/old" });
+    } finally { release(); await restoring; }
+  });
+
   it("refuses an explicit snapshot for a recreated logical seat before changing state", async () => {
     const snap = seedRigAndSnapshot({ nodes: [{ logicalId: "worker", role: "worker", runtime: "claude-code" }], edges: [],
       resumeType: "claude_id", resumeToken: "old-conversation" });
