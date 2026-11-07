@@ -370,6 +370,7 @@ export class SeatRuntimeSwitchService {
   }): Promise<SetRuntimeResult> {
     const { db, rigRepo, sessionRegistry, tmuxAdapter: tmux } = this.deps;
     const { node, sessionName, target, materials } = ctx;
+    const changesPiRuntime = target !== node.runtime && (target === "pi" || node.runtime === "pi");
     const failed = (message: string, guidance?: string): RuntimeSwitchRefusal => ({ ok: false, code: "runtime_switch_failed", committed: false, message,
       guidance: guidance ?? `${ctx.seatRef} is unchanged on ${node.runtime}. Correct the cause and try again.` });
     // Refuse unreadable target settings before an active switch can hold sends to the current occupant.
@@ -435,7 +436,7 @@ export class SeatRuntimeSwitchService {
         claudePermissions: override.claudePermissions, kernelAuthority: override.kernelAuthority, teamPermissionDefault: override.teamPermissionDefault,
         ...(override.codexPermissions ? { codexPermissions: override.codexPermissions } : {}),
         nonInterruptive: rigRepo.getRigNonInterruptive(node.rigId), launchPosture, ...(permissionMode ? { permissionMode } : {}),
-        seatEnv: withPluginDirs({ ...rigRepo.getEffectiveSeatEnv(node.id, ctx.input.accountHome === undefined),
+        seatEnv: withPluginDirs({ ...rigRepo.getEffectiveSeatEnv(node.id, changesPiRuntime || ctx.input.accountHome === undefined),
           ...(ctx.input.accountHome !== undefined ? { [RUNTIME_HOME_VAR[target]]: ctx.input.accountHome } : {}) }, [corePluginDir, target === "claude-code" ? materials.seatSkills.pluginDir : undefined]),
         ...((corePluginDir || codexCorePluginDir) && node.cwd ? { seatProjectDir: node.cwd } : {}) },
       onPaneCreated: (pane) => {
@@ -447,7 +448,7 @@ export class SeatRuntimeSwitchService {
           const base = nodePath.join(this.deps.openrigHome ?? getOpenRigHome(), "state", "pi");
           const source = piSeatPaths(piAccountStateRoot(db, base, sessionName), sessionName).agentDir;
           const destination = piSeatPaths(piAccountSwitchStateRoot(base, successorGeneration), sessionName).agentDir;
-          if (fs.existsSync(source)) fs.cpSync(source, destination, { recursive: true, verbatimSymlinks: true,
+          if (node.runtime === "pi" && fs.existsSync(source)) fs.cpSync(source, destination, { recursive: true, verbatimSymlinks: true,
             filter: file => file !== nodePath.join(source, "auth.json") && file !== nodePath.join(source, ".openrig-account") });
           // Clearing without a configured home returns to the original seat-local login, if it had one.
           const baseline = piSeatPaths(base, sessionName).agentDir;
@@ -458,7 +459,10 @@ export class SeatRuntimeSwitchService {
         }
         return materials.prepare(binding, adapter);
       },
-        binding: { ...materials.bindingAdditions(), ...(ctx.input.accountHome !== undefined ? { accountHome: ctx.input.accountHome, accountToken: ctx.input.accountToken ?? null }
+        binding: { ...materials.bindingAdditions(),
+          // Explicit nulls make adapters resolve target defaults without reading a legacy source token.
+          ...(changesPiRuntime ? { accountHome: null, accountToken: null } : {}),
+          ...(ctx.input.accountHome !== undefined ? { accountHome: ctx.input.accountHome, accountToken: ctx.input.accountToken ?? null }
           : ctx.input.clearAccountHome || node.accountHome ? { accountHome: null, ...(node.accountHome ? { accountToken: null } : {}) } : {}), runtimeSwitchFrom: { runtime: node.runtime!, session: sessionName, pane: ctx.predecessorPane, generation: ctx.predecessorGeneration } } },
     });
     if (!launch.ok) {
@@ -580,7 +584,7 @@ export class SeatRuntimeSwitchService {
           target === "pi" && node.runtime === "pi" && ctx.input.effort === undefined ? readSeatEffort(db, node.id)?.choice ?? null : null, materials.settings.advisor.value, materials.settings.codexConfigProfile.value,
           ...(spec ? [spec.name, spec.version, spec.hash, spec.restorePolicy] : []), ctx.sessionName, at, node.id);
       db.prepare("UPDATE nodes SET account_home = ?, claude_token_ref = CASE WHEN ? THEN ? ELSE claude_token_ref END WHERE id = ?")
-        .run(ctx.input.accountHome ?? null, ctx.input.accountHome !== undefined || node.accountHome ? 1 : 0,
+        .run(ctx.input.accountHome ?? null, ctx.input.accountHome !== undefined || node.accountHome || (target !== node.runtime && (target === "pi" || node.runtime === "pi")) ? 1 : 0,
           ctx.input.accountToken ? JSON.stringify(ctx.input.accountToken) : null, node.id);
       new NativePermissionStore(db).write(node.id, ctx.selection, ctx.input.requestedBy?.trim() || ctx.sessionName, ctx.input.reason);
       // One explicit Codex choice: the switch's mode replaces the seat's envelope here, and the event says so.
