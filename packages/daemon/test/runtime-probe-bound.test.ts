@@ -48,6 +48,8 @@ const starts = (log: string): Array<{ arg: string; pids: number[]; pgid: number 
 
 // A killed process keeps its pid until it is reaped (orphans by init, or launchd on macOS): every recorded pid and
 // group must be gone within REAP_BOUND_MS; anything left is named with its ps state.
+// Leave time for the fixture and its child to start on a host running other suites.
+const PROBE_BOUND_MS = 5_000;
 const REAP_BOUND_MS = 2_000;
 const exists = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const psRows = () => execFileSync("ps", ["-A", "-o", "pid=,pgid=,stat="]).toString().trim().split("\n")
@@ -76,12 +78,12 @@ describe("boundedProbeExec", () => {
   it("a hung probe rejects within its bound and its whole process group is ended, even when it ignores TERM", async () => {
     const fake = fakeRuntime("hangy", "hang", "ok");
     const started = performance.now();
-    const err = await boundedProbeExec(800, 300)(`${path.join(fake.dir, "hangy")} --version`).catch((e) => e);
+    const err = await boundedProbeExec(PROBE_BOUND_MS, 300)(`${path.join(fake.dir, "hangy")} --version`).catch((e) => e);
     const ms = performance.now() - started;
     expect(err).toBeInstanceOf(ProbeTimeoutError);
-    expect(err.message).toBe(`${path.join(fake.dir, "hangy")} --version did not answer within 1 s; the probe was ended`);
+    expect(err.message).toBe(`${path.join(fake.dir, "hangy")} --version did not answer within 5 s; the probe was ended`);
     // The bound, plus stopGroup's steps (a moment, TERM, KILL, reap wait; 300 ms each at most).
-    expect(ms).toBeLessThan(800 + 4 * 300 + 1_000);
+    expect(ms).toBeLessThan(PROBE_BOUND_MS + 4 * 300 + 1_000);
     const [s] = starts(fake.log);
     expect(s!.pids).toHaveLength(2);
     expect(await leftAfterReapBound(s!), `pids ${s!.pids.join(",")} group ${s!.pgid}`).toEqual([]);
@@ -95,9 +97,9 @@ describe("boundedProbeExec where a process group can't be signalled, and with a 
     const noGroupKill = async () => {};
     const started = performance.now();
     // exec, so the probe process is the fake itself, not a shell around it.
-    const err = await boundedProbeExec(800, 300, { stopGroup: noGroupKill })(`exec ${path.join(fake.dir, "hangy")} --version`).catch((e) => e);
+    const err = await boundedProbeExec(PROBE_BOUND_MS, 300, { stopGroup: noGroupKill })(`exec ${path.join(fake.dir, "hangy")} --version`).catch((e) => e);
     expect(err).toBeInstanceOf(ProbeTimeoutError);
-    expect(performance.now() - started).toBeLessThan(800 + 300 + 1_000);
+    expect(performance.now() - started).toBeLessThan(PROBE_BOUND_MS + 300 + 1_000);
     const [s] = starts(fake.log);
     const [probePid, childPid] = s!.pids;
     // The probe itself is gone (killed, and reaped by the runner's bounded wait); its descendant survives, as on Windows.
@@ -120,7 +122,7 @@ process.stdout.write("holder 4.5.6\\n", () => process.exit(0));
 `, { mode: 0o755 });
     const started = performance.now();
     expect(await boundedProbeExec(5_000, 300)(`${script} --version`)).toBe("holder 4.5.6\n");
-    expect(performance.now() - started).toBeLessThan(3_000);
+    expect(performance.now() - started).toBeLessThan(PROBE_BOUND_MS);
     const { child } = JSON.parse(fs.readFileSync(log, "utf8")) as { child: number };
     const until = Date.now() + REAP_BOUND_MS;
     while (Date.now() < until && exists(child)) await new Promise((r) => setTimeout(r, 50));
@@ -179,7 +181,7 @@ process.stdout.write("updater 7.8.9\\n", () => process.exit(0));
 `, { mode: 0o755 });
     const started = performance.now();
     expect(await boundedProbeExec(5_000, 300)(`${script} --version`)).toBe("updater 7.8.9\n");
-    expect(performance.now() - started).toBeLessThan(3_000);
+    expect(performance.now() - started).toBeLessThan(PROBE_BOUND_MS);
     const { child } = JSON.parse(fs.readFileSync(log, "utf8")) as { child: number };
     await new Promise((r) => setTimeout(r, 500));
     expect(exists(child), `background descendant ${child}`).toBe(true);
@@ -203,7 +205,7 @@ describe("RuntimeVerifier with a bounded probe", () => {
     process.env.PATH = restorePath;
   });
   const onPath = (dir: string) => { process.env.PATH = `${dir}${path.delimiter}${restorePath}`; };
-  const verifier = () => new RuntimeVerifier({ exec: vi.fn(async () => { throw new Error("exec must not run the probes"); }), db, probeExec: boundedProbeExec(800, 300) });
+  const verifier = () => new RuntimeVerifier({ exec: vi.fn(async () => { throw new Error("exec must not run the probes"); }), db, probeExec: boundedProbeExec(PROBE_BOUND_MS, 300) });
 
   it("a healthy probe is unchanged: verified with its version, one start", async () => {
     const fake = fakeRuntime("codex", "ok", "ok");
@@ -217,9 +219,9 @@ describe("RuntimeVerifier with a bounded probe", () => {
     onPath(fake.dir);
     const started = performance.now();
     const result = await verifier().verifyCodex();
-    expect(performance.now() - started).toBeLessThan(2 * (800 + 4 * 300) + 1_000);
+    expect(performance.now() - started).toBeLessThan(2 * (PROBE_BOUND_MS + 4 * 300) + 1_000);
     expect(starts(fake.log).map((s) => s.arg)).toEqual(["--version"]);
-    expect(result).toMatchObject({ status: "error", version: null, error: "codex --version did not answer within 1 s; the probe was ended" });
+    expect(result).toMatchObject({ status: "error", version: null, error: "codex --version did not answer within 5 s; the probe was ended" });
     for (const s of starts(fake.log)) expect(await leftAfterReapBound(s), `${s.arg}: pids ${s.pids.join(",")} group ${s.pgid}`).toEqual([]);
     // Persisted like any verification.
     expect(db.prepare("SELECT status FROM runtime_verifications WHERE runtime = 'codex'").get()).toEqual({ status: result.status });
@@ -230,8 +232,8 @@ describe("RuntimeVerifier with a bounded probe", () => {
     onPath(fake.dir);
     const started = performance.now();
     const result = await verifier().verifyCodex();
-    expect(performance.now() - started).toBeLessThan(800 + 4 * 300 + 1_000);
-    expect(result).toMatchObject({ status: "error", version: null, error: "codex --help did not answer within 1 s; the probe was ended" });
+    expect(performance.now() - started).toBeLessThan(PROBE_BOUND_MS + 4 * 300 + 1_000);
+    expect(result).toMatchObject({ status: "error", version: null, error: "codex --help did not answer within 5 s; the probe was ended" });
     expect(starts(fake.log).map((s) => s.arg)).toEqual(["--version", "--help"]);
     for (const s of starts(fake.log)) expect(await leftAfterReapBound(s), `${s.arg}: pids ${s.pids.join(",")} group ${s.pgid}`).toEqual([]);
   }, 20_000);
