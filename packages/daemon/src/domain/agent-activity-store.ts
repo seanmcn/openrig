@@ -398,7 +398,7 @@ export class AgentActivityStore {
 export function hookEventState(rawEvent: string | null | undefined, rawSubtype: string | null | undefined, seatRuntime: string | null, communityRunner = false): AgentActivity["state"] {
   if (rawEvent === "UserPromptSubmit" || rawEvent === "PreToolUse" || rawEvent === "active") return "running";
   if (rawEvent === "PermissionRequest") return seatRuntime === "codex" ? "unknown" : "needs_input";
-  if (rawEvent === "PermissionPromptConfirmed") return "needs_input";
+  if (rawEvent === "PermissionPromptConfirmed" || (rawEvent === "at_limit" && seatRuntime === "pi")) return "needs_input";
   if (rawEvent === "Notification") {
     if (rawSubtype === "permission_prompt" || rawSubtype === "elicitation_dialog" || (seatRuntime === "omp" && rawSubtype === "runtime_error")) return "needs_input";
     return rawSubtype === "idle_prompt" ? "idle" : "unknown";
