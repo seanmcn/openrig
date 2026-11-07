@@ -42,6 +42,7 @@ function mockTmux(overrides?: {
     capturePaneContent: overrides?.capturePaneContent ?? vi.fn(async () => ""),
     hasSession: overrides?.hasSession ?? vi.fn(async () => true),
     getPaneCommand: overrides?.getPaneCommand ?? vi.fn(async () => "node"),
+    getSessionEnv: vi.fn(async () => "node-pi"),
     createSession: async () => ({ ok: true as const }),
     killSession: async () => ({ ok: true as const }),
     listSessions: async () => [],
@@ -849,6 +850,7 @@ describe("PiRuntimeAdapter and PiResumeAdapter launch_wrapper", () => {
     const resolveLaunchWrapper = vi.fn((w: readonly string[]) => [`/resolved/bin/${w[0]}`, ...w.slice(1)]);
     const seatLaunchEnvironment = {
       resolveLaunchWrapper,
+      accountHome: vi.fn(() => undefined),
       command: vi.fn(async (session: string, cmd: string, target: unknown) => {
         commandCalls.push({ session, cmd, target });
         return `/usr/bin/env 'OPENRIG_RUNTIME=pi' ${cmd}`;
@@ -1016,6 +1018,7 @@ describe("PiRuntimeAdapter and PiResumeAdapter launch_wrapper", () => {
     const resolveLaunchWrapper = vi.fn((w: readonly string[]) => [`/abs/bin/${w[0]}`, ...w.slice(1)]);
     const seatLaunchEnvironment = {
       resolveLaunchWrapper,
+      accountHome: vi.fn(() => undefined),
       command: vi.fn(async (session: string, cmd: string, target: unknown) => {
         commandCalls.push({ session, cmd, target });
         return `/usr/bin/env ${cmd}`;
@@ -1039,7 +1042,7 @@ describe("PiRuntimeAdapter and PiResumeAdapter launch_wrapper", () => {
     expect(commandCalls).toEqual([{
       session: SESSION,
       cmd: expect.stringContaining("--approve --model 'zai/glm-5.2' --thinking 'high' --session"),
-      target: { runtime: "pi" },
+      target: { runtime: "pi", nodeId: "node-pi", accountHome: undefined },
     }]);
     const expectedFlags = "--launch-wrapper-arg '/abs/bin/my-wrapper' --launch-wrapper-arg '--opt' --launch-wrapper-arg '--'";
     expect(sendShellCommand.mock.calls[0]![1]).toContain("node '/daemon-dist/adapters/pi-runner.js'");
