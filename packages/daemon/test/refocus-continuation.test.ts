@@ -30,6 +30,11 @@ process.stdout.write("{}");
 ` : '#!/bin/sh\nif [ "$1 $2" = "stream emit" ]; then\n printf "%s\\n" "$*" >> "$CALLS"\n exit "${STREAM_EXIT:-0}"\nfi\nprintf "{}"\n');
   chmodSync(trace, 0o755);
   chmodSync(rig, 0o755);
+  // Warm newly written executables before exercising the hook's bounded lookups and reporting.
+  for (const executable of [trace, rig]) {
+    const ready = spawnSync(executable, [], { encoding: "utf8", timeout: 10_000 });
+    expect(ready.status, ready.error?.message || ready.stderr).toBe(0);
+  }
   const run = (event: string, prompt = "continue", good = true, extra: NodeJS.ProcessEnv = {}, identity = "occupant", timeout = 10_000) => {
     const result = spawnSync(process.execPath, [hook, "--runtime", "claude"], {
       input: JSON.stringify({ hook_event_name: event, session_id: identity, prompt, transcript_path: transcript }),
