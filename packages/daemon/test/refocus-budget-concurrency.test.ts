@@ -3,7 +3,7 @@
 // Each case runs the real hook as a harness does (JSON on stdin, killed at the registration's outer bound), with a stub
 // `rig` and a stub trace script whose delays are set per case. The overlaps are hook processes overlapping; whether a
 // harness overlaps these events natively is not established here.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +25,7 @@ afterEach(() => {
 
 interface Fixture { home: string; bin: string; log: string }
 
+/** Build isolated hook state and controllable lookup scripts for timing and overlap cases. */
 function fixture(): Fixture {
   root = mkdtempSync(join(tmpdir(), "refocus-budget-"));
   const home = join(root, "openrig");
@@ -45,12 +46,12 @@ case "$1 $2" in
 esac
 `);
   writeFileSync(join(bin, "trace"), `#!/bin/sh
+[ -n "$STUB_TRACE_READY" ] && touch "$STUB_TRACE_READY"
+if [ -n "$STUB_TRACE_RELEASE" ]; then
+  while [ ! -f "$STUB_TRACE_RELEASE" ]; do sleep 0.02; done
+fi
 [ -n "$STUB_TRACE_PARTIAL" ] && echo "$STUB_TRACE_PARTIAL"
 ${sleep("STUB_TRACE_MS")}
-if [ -n "$STUB_TRACE_GATE" ]; then
-  echo ready > "$STUB_TRACE_GATE.ready"
-  while [ ! -f "$STUB_TRACE_GATE" ]; do sleep 0.02; done
-fi
 echo "TRACE OK: work and topology"
 `);
   chmodSync(join(bin, "rig"), 0o755);
@@ -108,7 +109,7 @@ describe("refocus: the time budget", () => {
   it("delivers a slow but successful trace when a longer budget is selected", async () => {
     const f = fixture();
     await hook(f, "PostCompact", "s1");
-    const r = await hook(f, "UserPromptSubmit", "s1", { OPENRIG_REFOCUS_BUDGET_MS: "20000", STUB_TRACE_MS: "2500" });
+    const r = await hook(f, "UserPromptSubmit", "s1", { OPENRIG_REFOCUS_BUDGET_MS: "10000", STUB_TRACE_MS: "2500" });
     expect(r.killed).toBe(false);
     expect(context(r)).toContain("TRACE OK: work and topology");
     expect(context(r)).not.toContain("TRACE GAP");
@@ -143,17 +144,16 @@ describe("refocus: the time budget", () => {
     await hook(f, "PostCompact", "s1");
     const r = await hook(f, "UserPromptSubmit", "s1", { STUB_TRACE_MS: "2500" }, 5_000);
     expect(r.killed).toBe(false);
-    // The 2.5 s trace must time out, but Node startup is outside that cap.
-    expect(r.ms).toBeLessThan(5_000);
+    expect(r.ms).toBeLessThan(3_500);
     expect(context(r)).toMatch(/TRACE GAP — spawnSync .* ETIMEDOUT/);
     expect(stateOf(f, "s1")).toMatchObject({ pendingOn: "PostCompact" });
   }, 20_000);
 
   it("with no budget selected, gives main's result: each lookup keeps its 2 s cap, unclipped, inside the 60 s bound", async () => {
-    // Lookups each under their own 2 s cap (with room for a slow runner's process start-up) that together pass 5 s: on
+    // Lookups each under their own 2 s cap (with room for a slow runner's process start-up) that together pass the 4.5 s lookup budget: on
     // main's 5 s registration this was killed; now it completes as main's code does.
     const f = fixture();
-    const slow = { STUB_WHOAMI_MS: "1700", STUB_TRACE_MS: "1700", STUB_CONTEXT_MS: "1700", OPENRIG_REFOCUS_CONTENT_REF: "refocus/team.md",
+    const slow = { STUB_WHOAMI_MS: "1550", STUB_TRACE_MS: "1550", STUB_CONTEXT_MS: "1550", OPENRIG_REFOCUS_CONTENT_REF: "refocus/team.md",
       OPENRIG_REFOCUS_WORK_NODE: "", OPENRIG_REFOCUS_TREES: "both" };
     await hook(f, "PostCompact", "s1");
     const r = await hook(f, "UserPromptSubmit", "s1", slow);
@@ -215,17 +215,18 @@ describe("refocus: overlapping events for one occupant (UNRESOLVED; characterize
     await hook(f, "UserPromptSubmit", "s1", { OPENRIG_REFOCUS_NOW: "1" });
     const file = join(f.home, "refocus", `${SEAT}__s1.json`);
     writeFileSync(file, JSON.stringify({ ...stateOf(f, "s1"), pendingOn: "Stop", pendingAt: "2026-10-18T17:00:00.000Z" }));
-    const gate = join(f.home, "release-trace");
-    const delivering = hook(f, "UserPromptSubmit", "s1", { STUB_TRACE_GATE: gate, OPENRIG_REFOCUS_BUDGET_MS: "52000" });
+    const ready = join(root!, "trace-ready");
+    const release = join(root!, "trace-release");
+    // Hold delivery after it has read the state; process start-up time cannot choose the interleaving.
+    const delivering = hook(f, "UserPromptSubmit", "s1", {
+      OPENRIG_REFOCUS_BUDGET_MS: "52000", STUB_TRACE_READY: ready, STUB_TRACE_RELEASE: release,
+    });
     try {
-      const deadline = Date.now() + 10_000;
-      while (!existsSync(`${gate}.ready`) && Date.now() < deadline) await wait(20);
-      expect(existsSync(`${gate}.ready`)).toBe(true);
+      await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout: 10000 });
       await hook(f, "PostCompact", "s1");
       expect(stateOf(f, "s1")).toMatchObject({ pendingOn: "PostCompact" });
     } finally {
-      writeFileSync(gate, "continue");
-      await delivering;
+      writeFileSync(release, "");
     }
     expect(context(await delivering)).toContain("REFOCUS");
     // The delivery wrote back the state it read before the PostCompact: the compaction's pending is gone.
@@ -263,8 +264,7 @@ describe("refocus: state left by an earlier candidate", () => {
     writeFileSync(file, JSON.stringify({ ...stateOf(f, "s1"), pendingSeq: 3,
       delivering: { token: "left-behind", at: new Date().toISOString(), pendingSeq: 3 } }));
     writeFileSync(`${file}.lock`, "left-behind");
-    // Exercise stale state independently of scheduler latency.
-    const r = await hook(f, "UserPromptSubmit", "s1", { OPENRIG_REFOCUS_BUDGET_MS: "52000" });
+    const r = await hook(f, "UserPromptSubmit", "s1", { OPENRIG_REFOCUS_BUDGET_MS: "10000" });
     expect(context(r)).toContain("REFOCUS (just compacted");
     expect(stateOf(f, "s1")).toMatchObject({ firedOn: "UserPromptSubmit" });
   }, 20_000);

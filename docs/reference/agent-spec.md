@@ -454,24 +454,39 @@ skills:
 | `path` | string | yes | — | Relative path to the skill's folder, which holds its `SKILL.md`. |
 | `on_restore` | string | no | `keep_saved` | What a restore (`rig up <rig>`) does with a Claude or Codex seat's copy of this skill in the seat's own storage: `keep_saved` or `follow_source`. |
 
+An unknown `on_restore` value produces an advisory and uses `keep_saved`; it does not invalidate the spec.
+
 A restore keeps the skills a seat was launched with. With `keep_saved`, it puts back the saved copy and never takes
 today's bytes from the source. With `follow_source`, before the seat's session starts, the restore reads the seat's agent
-spec as it is now, from the rig spec and folder the seat was launched from, and:
+spec as it is now, using the saved launch recipe and rig folder, and:
 
 - replaces the seat's copy with the source folder as it is now, and records it, so `rig down` removes it and the next
   restore puts it back as usual;
 - copies in a `follow_source` skill the profile now selects that the seat didn't have;
 - removes a skill that followed its source and that the profile no longer selects.
 
-A copy edited in the seat (a changed or added file), or a folder with the same id that OpenRig didn't write, is kept as
+A copy edited in the seat (changed bytes or recorded file permissions, or an added file), or a folder with the same id that OpenRig didn't write, is kept as
 it is and named in the restore's warnings. If the agent spec can't be read or resolved, the seat keeps its saved skills
 and the restore says why; a source folder without a `SKILL.md` keeps that skill's saved copy. A skill changed to
-`keep_saved` stops following at the next restore, and its copy stays.
+`keep_saved` stops following at the next restore, and its copy stays. Older seat records without file permissions
+retain their byte-only ownership checks until a new projection or refresh records permissions.
+
+Source file symlinks are dereferenced, including links to files outside the skill folder, just as during Claude and
+Codex launch projection. The seat receives an ordinary file containing the target's bytes. A broken link or a link to
+a directory makes the source unreadable and keeps the saved copy; links in the seat's destination remain protected.
 
 Only a restore does this; a running seat isn't changed, and neither is a Codex seat restarted in place. A Claude seat
-loads its seat plugin when its session starts, so it sees the new copies. A Codex seat reads each skill's `SKILL.md` at
-the path its skill catalog gives, so it sees a refreshed skill; its catalog is rebuilt on restore but sent to the seat
-only on a fresh start, so a resumed Codex seat isn't told about a skill copied in.
+loads its seat plugin when its session starts, so it sees the new copies. A Codex seat with following skills receives
+its rebuilt catalog after its resumed session is ready. The catalog lists the skills actually present, replaces its
+earlier OpenRig skill list, and asks it to read current skill files before using them. This includes newly selected
+skills and the removal of the last following skill. An edited or linked catalog is kept and not sent, with a warning;
+a delivery failure is reported instead of claiming a complete restore. Neither runtime erases skill instructions
+already read into the retained conversation.
+
+Following covers the whole selected skill folder, including scripts and references. It does not install external
+tools, change MCP configuration, or update bundled plugins. The saved launch recipe supplies the rig directory,
+member and profile; today's agent spec supplies the skill selection. Today's rig YAML and other agent settings are
+not applied by this refresh.
 
 ### Guidance Resources
 
@@ -528,7 +543,7 @@ restore behavior, and the distinction between readiness and verified proof.
 9. All resource paths must be safe relative paths (a plugin's `source.path` excepted).
 10. Resource IDs must be unique within their category, and each `resources.<category>` must be an array.
 11. `runtime_resources` entries require `runtime` and `type` fields.
-11a. A skill's `on_restore` must be `keep_saved` or `follow_source` when given.
+11a. An unknown skill `on_restore` value produces an advisory naming the known values and falls back to `keep_saved`.
 12a. `resources.hooks` and `profiles.<name>.uses.hooks` are refused: "removed in plugin-primitive (Phase 3a)". Declare
    a plugin instead.
 12b. A plugin needs a unique non-empty `id`, a `source` object with `kind: local` and a non-empty `path`, and a
