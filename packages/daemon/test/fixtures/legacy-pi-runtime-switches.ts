@@ -1,4 +1,4 @@
-import type { Migration } from "../migrate.js";
+import type { Migration } from "../../src/db/migrate.js";
 
 /** Widen runtime switches to Pi while retaining history and interrupted cutovers. */
 export const piRuntimeSwitchesSchema: Migration = {

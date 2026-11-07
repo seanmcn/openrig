@@ -42,7 +42,7 @@ function mockTmux(overrides?: {
     capturePaneContent: overrides?.capturePaneContent ?? vi.fn(async () => ""),
     hasSession: overrides?.hasSession ?? vi.fn(async () => true),
     getPaneCommand: overrides?.getPaneCommand ?? vi.fn(async () => "node"),
-    getSessionEnv: vi.fn(async () => "node-pi"),
+    getSessionEnv: async (_session: string, key: string) => key === "OPENRIG_NODE_ID" ? "node-pi" : undefined,
     createSession: async () => ({ ok: true as const }),
     killSession: async () => ({ ok: true as const }),
     listSessions: async () => [],
@@ -834,13 +834,6 @@ describe("a Pi seat's recorded guidance file that has since become a link (#2432
   });
 });
 
-it.each([["mistral", "MISTRAL_API_KEY"], ["google", "GEMINI_API_KEY"]])("passes only %s's key to Pi", (provider, variable) => {
-  const env = buildPiChildEnv({ MISTRAL_API_KEY: "m-key", GEMINI_API_KEY: "g-key", ANTHROPIC_API_KEY: "a-key" },
-    { agentDir: "/a", sessionsDir: "/s", model: `${provider}/model` });
-  expect(env[variable]).toBe(provider === "mistral" ? "m-key" : "g-key");
-  expect(Object.keys(env).filter(key => key.endsWith("API_KEY"))).toEqual([variable]);
-});
-
 describe("PiRuntimeAdapter and PiResumeAdapter launch_wrapper", () => {
   const statePath = piSeatPaths(STATE_ROOT, SESSION).runnerStatePath;
 
@@ -849,8 +842,8 @@ describe("PiRuntimeAdapter and PiResumeAdapter launch_wrapper", () => {
     const commandCalls: Array<{ session: string; cmd: string; target: unknown }> = [];
     const resolveLaunchWrapper = vi.fn((w: readonly string[]) => [`/resolved/bin/${w[0]}`, ...w.slice(1)]);
     const seatLaunchEnvironment = {
+      accountHome: () => undefined,
       resolveLaunchWrapper,
-      accountHome: vi.fn(() => undefined),
       command: vi.fn(async (session: string, cmd: string, target: unknown) => {
         commandCalls.push({ session, cmd, target });
         return `/usr/bin/env 'OPENRIG_RUNTIME=pi' ${cmd}`;
@@ -956,6 +949,7 @@ describe("PiRuntimeAdapter and PiResumeAdapter launch_wrapper", () => {
 
   it("PiRuntimeAdapter retains launch_path_too_long bare runner retry when wrapped because the raw runner command carries the exact same --launch-wrapper-arg flags", async () => {
     const seatLaunchEnvironment = {
+      accountHome: () => undefined,
       resolveLaunchWrapper: vi.fn((w: readonly string[]) => [`/abs/bin/${w[0]}`, ...w.slice(1)]),
       command: vi.fn(async (_s: string, cmd: string) => `/usr/bin/env 'OPENRIG_RUNTIME=pi' ${cmd}`),
     } as never;
@@ -1017,8 +1011,8 @@ describe("PiRuntimeAdapter and PiResumeAdapter launch_wrapper", () => {
     const commandCalls: Array<{ session: string; cmd: string; target: unknown }> = [];
     const resolveLaunchWrapper = vi.fn((w: readonly string[]) => [`/abs/bin/${w[0]}`, ...w.slice(1)]);
     const seatLaunchEnvironment = {
+      accountHome: () => undefined,
       resolveLaunchWrapper,
-      accountHome: vi.fn(() => undefined),
       command: vi.fn(async (session: string, cmd: string, target: unknown) => {
         commandCalls.push({ session, cmd, target });
         return `/usr/bin/env ${cmd}`;
@@ -1103,5 +1097,41 @@ describe("PiRuntimeAdapter and PiResumeAdapter launch_wrapper", () => {
     expect(tooLongSend.mock.calls[1]![1]).toMatch(/^node '/);
     expect(tooLongSend.mock.calls[1]![1]).toContain(expectedFlags);
   });
+});
 
+it.each(["selected", "cleared"])("does not bypass a %s Pi account when a wrapped launch cannot be staged", async selection => {
+  const fs = memFs();
+  const accountHome = selection === "cleared" ? null : "/accounts/pi";
+  const sendShellCommand = vi.fn(async (): Promise<TmuxResult> => ({ ok: false, code: "launch_path_too_long", message: "fixture bound" }));
+  const command = vi.fn(async (_session: string, cmd: string) => `/usr/bin/env ${cmd}`);
+  const adapter = new PiRuntimeAdapter({
+    tmux: mockTmux({ sendShellCommand }), fsOps: fs, stateRoot: STATE_ROOT, runnerEntryPath: RUNNER,
+    seatLaunchEnvironment: {
+      accountHome: () => "/accounts/previous", resolveLaunchWrapper: () => ["/wrapper", "--"], command,
+    } as never,
+  });
+  const result = await adapter.launchHarness({ tmuxSession: SESSION, nodeId: "node-pi", cwd: "/work", accountHome, launchWrapper: ["wrapper", "--"] } as never, { name: SESSION });
+  expect(result.ok).toBe(false);
+  expect(command.mock.calls[0]).toEqual([SESSION, expect.stringContaining("--launch-wrapper-arg '/wrapper'"), expect.objectContaining({ accountHome })]);
+  expect(sendShellCommand).toHaveBeenCalledTimes(1);
+});
+
+it("stages a Pi account successor with canonical identity and a separate state directory", async () => {
+  const fs = memFs();
+  const predecessorPath = piSeatPaths(STATE_ROOT, SESSION).runnerStatePath;
+  fs.files[predecessorPath] = readyState(SESSION_FILE, "old-launch");
+  const stagedRoot = `${STATE_ROOT}/account-switches/new-generation`;
+  const stagedPath = piSeatPaths(stagedRoot, SESSION).runnerStatePath;
+  const token = `${stagedRoot}/${SESSION}/sessions/new.jsonl`;
+  const sendShellCommand = vi.fn(async (target: string, text: string) => {
+    expect(target).toBe("staging-pane");
+    expect(text).toContain(`--session-name '${SESSION}' --state-root '${stagedRoot}'`);
+    fs.files[stagedPath] = readyState(token, launchIdFrom(text));
+    return { ok: true as const };
+  });
+  const adapter = new PiRuntimeAdapter({ tmux: mockTmux({ sendShellCommand }), fsOps: fs, stateRoot: STATE_ROOT, runnerEntryPath: RUNNER });
+  const binding = { tmuxSession: "staging-pane", launchGeneration: "new-generation", cwd: "/work", runtimeSwitchFrom: { runtime: "pi", session: SESSION, pane: "%0", generation: "old-generation" } } as never;
+  expect(await adapter.launchHarness(binding, { name: SESSION })).toMatchObject({ ok: true, resumeToken: token });
+  expect(await adapter.checkReady(binding)).toMatchObject({ ready: true });
+  expect(fs.files[predecessorPath]).toBe(readyState(SESSION_FILE, "old-launch"));
 });

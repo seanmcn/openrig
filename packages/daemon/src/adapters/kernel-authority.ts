@@ -7,7 +7,7 @@ import { shellQuote } from "./shell-quote.js";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 
-import { KERNEL_CLAUDE_ALLOW, TEAM_CLAUDE_ALLOW, TEAM_CLAUDE_ASK } from "../../assets/claude-team-permissions.cjs";
+import { KERNEL_CLAUDE_ALLOW, TEAM_CLAUDE_ALLOW, TEAM_CLAUDE_ASK } from "../../assets/claude-permission-policies.cjs";
 export { KERNEL_CLAUDE_ALLOW, TEAM_CLAUDE_ALLOW, TEAM_CLAUDE_ASK };
 
 type LaunchChoice = Pick<NodeBinding, "kernelAuthority" | "teamPermissionDefault" | "nonInterruptive" | "launchPosture" | "permissionMode" | "claudePermissions"> & {
@@ -37,6 +37,7 @@ function withIdleCompactionOff(args: string[], on: boolean): string[] {
   return [...args.slice(0, at + 1), JSON.stringify({ ...settings, idleCompaction: false }), ...args.slice(at + 2)];
 }
 
+/** Selects a built-in hook policy; keeps native allow/ask settings when the optional hook is absent. */
 function claudeCommandSettings(kind: "kernel" | "team"): string[] {
   const allow = kind === "kernel" ? KERNEL_CLAUDE_ALLOW : TEAM_CLAUDE_ALLOW;
   const ask = kind === "kernel" ? [] : TEAM_CLAUDE_ASK;
@@ -72,6 +73,7 @@ export function operationalLaunchArgs(runtime: string, choice: LaunchChoice): st
   return choice.kernelAuthority ? [] : nonInterruptiveArgs(runtime, choice);
 }
 
+/** Applies kernel or eligible team defaults before falling back to the explicit launch posture. */
 function claudeOperationalArgs(choice: LaunchChoice): string[] {
   if (choice.kernelAuthority) return claudeCommandSettings("kernel");
   if (choice.teamPermissionDefault && !choice.permissionMode && (!choice.launchPosture || choice.launchPosture === "floor")) {

@@ -109,8 +109,6 @@ export function parsePiRunnerState(raw: string): PiRunnerState | null {
 // seat's managed models.json instead (their vars are not ambient-forwarded).
 
 export const PI_PROVIDER_ENV_VARS: Record<string, string> = {
-  mistral: "MISTRAL_API_KEY",
-  google: "GEMINI_API_KEY",
   // Forward only the API key for the model's declared provider.
   "openrouter": "OPENROUTER_API_KEY",
   "zai": "ZAI_API_KEY",
@@ -244,6 +242,8 @@ export function buildPiChildEnv(
 // ── Command construction ─────────────────────────────────────────────────────
 
 export interface PiRunnerLaunchOpts {
+  /** Explicit prepared account, never inferred from the shell environment. */
+  accountHome?: string;
   /** Explicit runtime; omitted keeps the original Pi command byte-for-byte. */
   runtime?: RunnerRuntime;
   /** Absolute path to the compiled runner entry (daemon dist). */
@@ -315,6 +315,7 @@ export function buildPiRunnerCommand(opts: PiRunnerLaunchOpts): string {
     parts.push("--usage-facts");
     if (opts.openRouterCharge) parts.push("--openrouter-charge");
   }
+  if (opts.accountHome && opts.runtime !== "omp") parts.push("--account-home", shellQuote(opts.accountHome));
   if (opts.launchWrapper?.length && opts.runtime !== "omp") {
     for (const arg of opts.launchWrapper) {
       parts.push("--launch-wrapper-arg", shellQuote(arg));
