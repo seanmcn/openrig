@@ -574,7 +574,7 @@ describe("public world pack", () => {
     expect(skip.status, skip.stdout + skip.stderr).toBe(0);
     expect(skip.stdout).toMatch(/skip.*rig-command-surface/i);
     expect(skip.stdout).toMatch(/1 skipped/i);
-  });
+  }, 60_000); // Five full verifier runs spawn CLI processes and share the host with other suites.
 
   it("fails when world-public is absent from the serving and namespace projections", () => {
     const rigPath = writeRigFixture({

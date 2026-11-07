@@ -1067,6 +1067,9 @@ export interface PluginResource {
   id: string;
   source: PluginSource;
   pluginType?: "claude" | "codex" | "auto";
+  /** `run_hooks: true`: OpenRig makes the plugin's hooks run in each seat that selects it, Claude through
+   *  CLAUDE_CODE_PLUGIN_DIRS and Codex through its own install, approved when the installed copy matches the source. */
+  runHooks?: true;
 }
 
 export interface AgentResources {

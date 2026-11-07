@@ -230,4 +230,31 @@ profiles:
     const spec = normalizeAgentSpec(raw);
     expect(spec.profiles["default"]!.uses.plugins).toEqual([]);
   });
+
+  it("accepts run_hooks and keeps it only when true", () => {
+    const raw = parseAgentSpec(`
+name: hooked
+version: "0.2"
+resources:
+  plugins:
+    - id: guards
+      source: { kind: local, path: /abs/plugins/guards }
+      run_hooks: true
+    - id: quiet
+      source: { kind: local, path: /abs/plugins/quiet }
+      run_hooks: false
+    - id: plain
+      source: { kind: local, path: /abs/plugins/plain }
+`);
+    expect(validateAgentSpec(raw).valid).toBe(true);
+    const spec = normalizeAgentSpec(raw);
+    expect(spec.resources.plugins.map((plugin) => plugin.runHooks)).toEqual([true, undefined, undefined]);
+  });
+
+  it("rejects a run_hooks that isn't a boolean", () => {
+    const raw = { name: "test", version: "1.0", resources: { plugins: [{ id: "p", source: { kind: "local", path: "/p" }, run_hooks: "yes" }] } };
+    const result = validateAgentSpec(raw);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("plugins[0].run_hooks"))).toBe(true);
+  });
 });

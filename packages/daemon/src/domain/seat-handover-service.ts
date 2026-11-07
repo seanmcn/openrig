@@ -34,6 +34,7 @@ import { AppliedLaunchObservationStore } from "./applied-launch-observation-stor
 import { findOtherSessionOwner } from "./session-owner.js";
 import { heldMessagesNotice } from "./outbox-handler.js";
 import { seatCodexCorePluginDir, seatCorePluginDir, withPluginDirs } from "./claude-core-plugin-env.js";
+import { seatClaudeHookPluginDirs } from "./declared-plugin-hooks.js";
 import { seatSkillPluginDirForNode } from "./seat-skill-storage.js";
 import { recordConversationPromptForNode, recordForkConversationPromptForNode, seatLaunchAdditionsForLaunch } from "./seat-launch-additions.js";
 import { inspectStartupStagedText, startupNoInputLine, startupOwnCollapsedPaste, STARTUP_UNCONFIRMED_REASON } from "./startup-submission-evidence.js";
@@ -536,6 +537,8 @@ export class SeatHandoverService {
     }
     const occupantGeneration = this.sessionRegistry.reserveOccupantGeneration();
     const corePluginDir = seatCorePluginDir(node, this.db, undefined, this.pluginsDir);
+    // The successor is the same seat, so it loads the same declared plugins' hooks.
+    const hookPluginDirs = seatClaudeHookPluginDirs(node, this.db, undefined, this.pluginsDir);
     // OPR.0.7.0.13 — the successor is the same seat, so it gets the same skill storage.
     const seatSkillDir = seatSkillPluginDirForNode(this.db, node.id);
     // OPR.0.7.0.9: the seat's own launch additions reach the successor as they do any launch; a missing or refused
@@ -565,7 +568,7 @@ export class SeatHandoverService {
       // spec (else the running topology drifts from the founder-designed one at every handover).
       // A4-profile: likewise carry the codex config profile (adapter emits -p) — the restore path
       // already threads it; handover must too, or a profile-pinned codex seat reverts at handover.
-      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, ...(codexRebuildPermissions ? { codexRebuildPermissions } : {}), ...(seatAdditions.additions ? { launchAdditions: seatAdditions.additions } : {}), ...(launchWrapper?.length ? { launchWrapper } : {}), claudePermissions: permissionOverride.claudePermissions, claudeMcp, codexPermissions: permissionOverride.codexPermissions, kernelAuthority: permissionOverride.kernelAuthority, teamPermissionDefault: permissionOverride.teamPermissionDefault, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: readSeatEffort(this.db, node.id)?.effective ?? undefined, advisor: node.advisor ?? undefined, codexConfigProfile: node.codex_config_profile ?? undefined, seatEnv: withPluginDirs(this.rigRepo.getEffectiveSeatEnv(node.id), [corePluginDir, seatSkillDir, ...additionPluginDirs]), ...((corePluginDir || codexCorePluginDir) && node.cwd ? { seatProjectDir: node.cwd } : {}) },
+      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, ...(codexRebuildPermissions ? { codexRebuildPermissions } : {}), ...(seatAdditions.additions ? { launchAdditions: seatAdditions.additions } : {}), ...(launchWrapper?.length ? { launchWrapper } : {}), claudePermissions: permissionOverride.claudePermissions, claudeMcp, codexPermissions: permissionOverride.codexPermissions, kernelAuthority: permissionOverride.kernelAuthority, teamPermissionDefault: permissionOverride.teamPermissionDefault, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: readSeatEffort(this.db, node.id)?.effective ?? undefined, advisor: node.advisor ?? undefined, codexConfigProfile: node.codex_config_profile ?? undefined, seatEnv: withPluginDirs(this.rigRepo.getEffectiveSeatEnv(node.id), [corePluginDir, ...hookPluginDirs, seatSkillDir, ...additionPluginDirs]), ...((corePluginDir || codexCorePluginDir) && node.cwd ? { seatProjectDir: node.cwd } : {}) },
       departingSessionName: latestSession.session_name,
       occupantGeneration,
       // OPR.0.5.5.5: a fork-sourced successor launches as a NATIVE FORK of the

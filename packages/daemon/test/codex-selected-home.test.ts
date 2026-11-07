@@ -77,7 +77,8 @@ it.each(['managed', 'legacy', 'capability'])("%s probe uses the explicit home an
     expect((await a.launchHarness({ nodeId: 'node', tmuxSession: 'seat@rig', cwd: f.cwd, codexConfigProfile: 'fixture' } as any, { name: 'seat' })).ok).toBe(true);
   }
   const rows = fs.readFileSync(record, 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  expect(rows.length).toBeGreaterThan(0); for (const r of rows) { expect(r.home).toBe(f.selected); expect(r.cwd).toBe(f.cwd); }
+  // process.cwd() is the resolved folder, and macOS's temp folder sits behind the /var -> /private/var link.
+  expect(rows.length).toBeGreaterThan(0); for (const r of rows) { expect(r.home).toBe(f.selected); expect(fs.realpathSync(r.cwd)).toBe(fs.realpathSync(f.cwd)); }
   if (kind !== 'capability') expect(JSON.parse((await f.run(f.tmux.sendShellCommand.mock.calls.at(-1)![1])).stdout).home).toBe(f.selected);
 });
 function seed(root: string, id: string) {

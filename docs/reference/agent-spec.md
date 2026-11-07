@@ -368,6 +368,45 @@ their meaning; `~user` is still a literal relative segment, not a user lookup.
 This form needs OpenRig 0.6.5 or later; keep bundles using it pinned to such a
 version.
 
+### Running a plugin's hooks
+
+A plugin's hooks run in a seat that selects it only when its entry says `run_hooks: true`:
+
+```yaml
+resources:
+  plugins:
+    - id: guards
+      source:
+        kind: local
+        path: plugins/guards
+      run_hooks: true
+```
+
+- **Claude Code.** The plugin's resolved location goes on the seat's `CLAUDE_CODE_PLUGIN_DIRS`, after the vendored
+  `openrig-core` and before the seat's own skill plugin, on every launch path: fresh, restore, handover, runtime switch and
+  the managed `env -i` launch. It needs a `.claude-plugin/plugin.json` (or `plugin_type: claude`, which then still needs
+  that manifest) and an absolute path without a colon, which the variable would split at; one that can't be loaded is
+  named in the daemon's log. Claude loads the whole plugin, its skills and commands as well as its hooks, so a plugin
+  meant only for its hooks is best kept to its hooks. Claude Code reads the variable from 2.1.280.
+- **Codex.** On every launch, a resume included, and at daemon start, OpenRig installs the plugin with Codex's own
+  commands (`codex plugin marketplace add`, `codex plugin add`) into the seat's Codex home: its own `CODEX_HOME`, else the
+  daemon's. It installs from a marketplace of copies it keeps, `openrig-declared`, at
+  `<OpenRig home>/state/codex-declared-plugins`, and refreshes the copy and Codex's install when the source changes. Once
+  Codex's installed copy matches OpenRig's byte for byte, each of the plugin's command hooks is approved in that home's
+  `config.toml` (`[hooks.state."<name>@openrig-declared:<hooks file>:<event>:<group>:<handler>"]`, with `trusted_hash`
+  and `trusted_content_hash`), so Codex runs it without its own review. Codex asks again whenever a plugin's files
+  change, so this repeats after each refresh. A hook whose hash OpenRig can't reproduce (an event Codex doesn't name, a
+  non-command handler, no numeric `timeout`) is left to Codex's review. The plugin needs a `.codex-plugin/plugin.json` or a
+  `.claude-plugin/plugin.json` (Codex reads both) with a `name` and a `version`; its hooks file is the manifest's `hooks`
+  path, else `hooks/hooks.json`. A person's `enabled = false` for the plugin, an effective `plugins._default` that
+  disables plugins, a marketplace named `openrig-declared` with another source, and a hook's `enabled` setting are left
+  as they are. Nothing is installed while `runtime.codex.hooks_enabled` is off.
+
+`run_hooks: true` is the approval: OpenRig runs the hooks of whatever bytes the declared source holds, so declare only a
+source you trust. A Codex home is shared state, so a plugin installed there runs in every Codex session that uses that
+home, not only in the seats that selected it; its hooks see `OPENRIG_SESSION_NAME` in a seat and can check it if they
+must. The shipped `openrig-core` plugin keeps its own route and ignores `run_hooks`.
+
 ### Resource Categories
 
 | Category | Fields | Description |
@@ -375,7 +414,7 @@ version.
 | `skills` | `id`, `path`, `on_restore`* | Skill directories containing a SKILL.md (see "Skill Resources"). Projected by the runtime adapter. Claude and Codex seats get them in the seat's own storage, `<OpenRig home>/state/seats/<rig id>/<logical seat>/<runtime>/`, outside the project: Claude to `plugin/skills/<id>` in the seat's generated plugin, where they show as `openrig:<id>`, and Codex to `skills/<id>` beside the seat's skill catalog. A Claude or Codex seat without that storage gets `<cwd>/.claude/skills/<id>` or `<cwd>/.agents/skills/<id>`. Pi and OMP project to the seat's own agent directory under OpenRig's state. |
 | `guidance` | `id`, `path`, `target`*, `merge`* | Guidance files, merged as a managed block (see "Guidance Resources"). |
 | `subagents` | `id`, `path` | Subagent definitions. Claude copies them to `<cwd>/.claude/agents/`, Codex to `<cwd>/.agents/`; Pi and OMP don't project them. |
-| `plugins` | `id`, `source`, `plugin_type`* | Local plugin directories; selected with `uses.plugins`. `source.kind` must be `local`. `plugin_type` is `claude`, `codex` or `auto` (default): Claude projects a plugin to `<cwd>/.claude/plugins/<id>` when it is `claude`, or `auto` with a `.claude-plugin/plugin.json`; Codex projects to `<cwd>/.codex/plugins/<id>` when it is `codex`, or `auto` with a `.codex-plugin/plugin.json`. Pi and OMP don't project plugins. Claude Code and Codex do not read skills from that projected plugin folder, so selected plugin skills are also projected into the seat's skill folder under their plain names: the seat's own storage (see `skills`), or `.claude/skills/<name>` or `.agents/skills/<name>` for a seat without it. The exception is the vendored `openrig-core` selected by a Claude seat: Claude loads that plugin directly, skills included, so its skills are not projected a second time. A folder already there with the same name, ignoring letter case, that OpenRig doesn't own is left alone; unless it already holds the same bytes, launch warns `plugin_skill_kept`. A skill the seat already selects by that name (from its profile, the System World or the project) keeps that source, an edited OpenRig-owned copy is kept with `plugin_skill_kept`, a retained plugin copy whose remembered source can no longer be projected is also kept with `plugin_skill_kept` (a seat selecting that plugin refreshes it at its next launch), and if the plugin skills can't be projected the seat launches without them and warns `plugin_skills_not_projected`. Hooks ship inside plugins. |
+| `plugins` | `id`, `source`, `plugin_type`*, `run_hooks`* | Local plugin directories; selected with `uses.plugins`. `source.kind` must be `local`. `plugin_type` is `claude`, `codex` or `auto` (default): Claude projects a plugin to `<cwd>/.claude/plugins/<id>` when it is `claude`, or `auto` with a `.claude-plugin/plugin.json`; Codex projects to `<cwd>/.codex/plugins/<id>` when it is `codex`, or `auto` with a `.codex-plugin/plugin.json`. Pi and OMP don't project plugins. Claude Code and Codex do not read skills from that projected plugin folder, so selected plugin skills are also projected into the seat's skill folder under their plain names: the seat's own storage (see `skills`), or `.claude/skills/<name>` or `.agents/skills/<name>` for a seat without it. The exception is the vendored `openrig-core` selected by a Claude seat: Claude loads that plugin directly, skills included, so its skills are not projected a second time. A folder already there with the same name, ignoring letter case, that OpenRig doesn't own is left alone; unless it already holds the same bytes, launch warns `plugin_skill_kept`. A skill the seat already selects by that name (from its profile, the System World or the project) keeps that source, an edited OpenRig-owned copy is kept with `plugin_skill_kept`, a retained plugin copy whose remembered source can no longer be projected is also kept with `plugin_skill_kept` (a seat selecting that plugin refreshes it at its next launch), and if the plugin skills can't be projected the seat launches without them and warns `plugin_skills_not_projected`. Hooks ship inside plugins; the projected folder isn't one either runtime loads them from, so a plugin's hooks run only with `run_hooks: true` (see "Running a plugin's hooks"). |
 | `runtime_resources` | `id`, `path`, `runtime`, `type` | Runtime-specific resources. `runtime` and `type` are required. An entry whose `runtime` isn't the seat's runtime is skipped. Pi and OMP project none. |
 
 *Fields marked with `*` are optional.
