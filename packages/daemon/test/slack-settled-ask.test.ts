@@ -377,6 +377,34 @@ describe("posted asks follow settlement outside Slack", () => {
     expect(postCount).toBe(7);
   });
 
+  it("remembers a deleted original across restarts: asked once, never again until its message changes", async () => {
+    const item = await postAsk();
+    apiHook = (method) => method === "conversations.history" ? response({ ok: true, messages: [] }) : undefined;
+    repo.update({ qitemId: item.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on" });
+    await vi.waitFor(() => expect(logs.join("\n")).toContain("original message unavailable"));
+    await new Promise((r) => setTimeout(r, 25));
+    const reads = () => methods.filter((m) => m === "conversations.history").length;
+    expect(reads()).toBe(1);
+    expect(repo.listTransitions(item.qitemId).filter((t) => t.transitionNote?.startsWith("slack-ask-settle-unavailable "))).toHaveLength(1);
+    expect(repo.getById(item.qitemId)?.state).toBe("done");
+
+    wire.stop(); start();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(reads()).toBe(1);
+    expect(methods).not.toContain("chat.update");
+    expect(repo.listTransitions(item.qitemId).filter((t) => t.transitionNote?.startsWith("slack-ask-settle-unavailable "))).toHaveLength(1);
+  });
+
+  it("keeps retrying after a restart when the failure isn't about the message itself", async () => {
+    const item = await postAsk();
+    apiHook = (method) => method === "conversations.history" ? response({ ok: false, error: "not_in_channel" }) : undefined;
+    repo.update({ qitemId: item.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on" });
+    await vi.waitFor(() => expect(logs.join("\n")).toContain("not_in_channel"));
+    expect(repo.listTransitions(item.qitemId).some((t) => t.transitionNote?.startsWith("slack-ask-settle-unavailable "))).toBe(false);
+    wire.stop(); apiHook = undefined; start();
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+  });
+
   it("shows a later close's new reason after the same direct ask was reopened", async () => {
     const item = await postAsk();
     wire.stop(); vi.useFakeTimers();
