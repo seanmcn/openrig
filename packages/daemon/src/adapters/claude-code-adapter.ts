@@ -665,7 +665,14 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     const launch = this.autoLaunches.get(binding.nodeId);
     if (!binding.tmuxPane || !launch) return looksReady ? "another" : "unknown";
     let rows: Awaited<ReturnType<NativeProcessLister>>;
-    try { rows = await (this.listProcesses ?? (() => listNativeProcesses({ claudeLaunchPaths: launch.scriptLaunch === true, frozenExecutable: launch.executable })))(); } catch { return "unknown"; }
+    let panePid: number | null = null;
+    try { panePid = await this.tmux.getPanePid(binding.tmuxPane); } catch { /* Keep the previous unscoped observation fallback. */ }
+    try {
+      rows = this.listProcesses
+        ? await this.listProcesses(panePid ?? undefined)
+        : await listNativeProcesses({ claudeLaunchPaths: launch.scriptLaunch === true,
+          frozenExecutable: launch.executable, panePid: panePid ?? undefined });
+    } catch { return "unknown"; }
     if (looksReady) return "another";
     const observation = { target: binding.tmuxPane, tmux: this.tmux, listProcesses: () => rows, selectedExecutable: launch.executable,
       scriptLaunch: launch.scriptLaunch };
@@ -682,7 +689,6 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       return await verifyCodexPaneProcess({ ...observation, listProcesses: this.listProcesses }) ? "another" : "unknown";
     }
     if (!options.positiveConflictOnly) return "unknown";
-    const panePid = await this.tmux.getPanePid(binding.tmuxPane);
     // Missing pane identity is unavailable evidence. A Claude elsewhere in this pane's subtree
     // remains unproven, rather than absent, even if it is not a foreground candidate yet.
     return panePid && rows.some(row => row.pid === panePid) && !subtreeNamesClaudeExecutable(rows, panePid)

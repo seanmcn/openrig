@@ -119,7 +119,7 @@ export class SeatIdentityReconciler {
     this.tmux = deps.tmux;
     this.now = deps.now ?? (() => new Date());
     this.store = new SeatIdentityStore(deps.db);
-    this.listProcesses = deps.listProcesses ?? listNativeProcesses;
+    this.listProcesses = deps.listProcesses ?? (() => listNativeProcesses());
   }
 
   private runningSeats(): RunningSeatRow[] {

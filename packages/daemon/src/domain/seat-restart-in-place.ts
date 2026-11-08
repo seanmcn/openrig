@@ -221,7 +221,7 @@ export class CodexInPlaceRestart {
       timeoutMs: deps.timing?.timeoutMs ?? 3_000,
       sleep: deps.timing?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
     };
-    this.listProcesses = deps.listProcesses ?? listNativeProcesses;
+    this.listProcesses = deps.listProcesses ?? (() => listNativeProcesses());
     this.now = deps.now ?? (() => new Date());
     this.daemonStartedAt = deps.daemonStartedAt ?? new Date(Date.now() - process.uptime() * 1000);
   }

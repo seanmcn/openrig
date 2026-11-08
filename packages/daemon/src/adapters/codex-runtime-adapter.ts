@@ -153,7 +153,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private tmux: TmuxAdapter;
   private seatLaunchEnvironment?: SeatLaunchEnvironment;
   private fs: CodexAdapterFsOps;
-  private listProcesses: () => CodexProcess[] | Promise<CodexProcess[]>;
+  private listProcesses: (panePid?: number) => CodexProcess[] | Promise<CodexProcess[]>;
   private readThreadIdByPid: (pid: number, identity?: string, home?: string) => Promise<string | undefined> | string | undefined;
   private readResumeEvidence: (pid: number, identity: string, home?: string) => Promise<CodexResumeEvidence> | CodexResumeEvidence;
   private resumeProofWindowMs: number;
@@ -214,7 +214,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     tmux: TmuxAdapter;
     seatLaunchEnvironment?: SeatLaunchEnvironment;
     fsOps: CodexAdapterFsOps;
-    listProcesses?: () => CodexProcess[] | Promise<CodexProcess[]>;
+    listProcesses?: (panePid?: number) => CodexProcess[] | Promise<CodexProcess[]>;
     readThreadIdByPid?: (pid: number, identity?: string, home?: string) => Promise<string | undefined> | string | undefined;
     /** #1524 (b): the conversation Codex's own records name for one process (pid and start time), or why none
      *  could be read. Default: the identity-gated thread reader for the launched process. */
@@ -2991,8 +2991,8 @@ async function defaultProfilePreflight(profile: string, selected?: { cwd: string
 // Exported for unit test (B12-T): the REAL async sampling path — the anti-vacuity test drives
 // this default directly (every other suite injects sync stubs) and asserts the non-blocking
 // property that the pre-B12 sync implementation violated.
-export async function defaultListProcesses(): Promise<CodexProcess[]> {
-  return listNativeProcesses();
+export async function defaultListProcesses(panePid?: number): Promise<CodexProcess[]> {
+  return listNativeProcesses(panePid === undefined ? {} : { panePid });
 }
 
 function findCodexDescendantPids(

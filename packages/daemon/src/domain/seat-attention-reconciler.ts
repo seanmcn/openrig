@@ -77,7 +77,8 @@ async function describeLineageFailure(input: {
     // One read serves every observation below, so the explanation costs one process-table read. A failed read
     // looks like an empty table (and a missing pane pid like no process), so neither may be reported as an absence.
     const pid = await input.tmux.getPanePid(input.target);
-    const rows = pid ? await Promise.resolve((input.listProcesses ?? listNativeProcesses)()).catch((): NativeProcessRow[] => []) : [];
+    const rows = pid ? await Promise.resolve((input.listProcesses ?? (panePid => listNativeProcesses({ panePid })))(pid))
+      .catch((): NativeProcessRow[] => []) : [];
     if (!pid || !rows.some((row) => row.pid === pid)) return "The pane's process could not be found in the process listing (the listing may have failed), so the runtime could not be verified";
     const observation = { target: input.target, tmux: input.tmux, listProcesses: () => rows };
     const passes = input.variant === "codex" ? !!await observeCodexPaneProcess({ ...observation, expectedToken: input.expectedToken, requireResume: input.exact, requireArgv: true })
@@ -228,7 +229,7 @@ export async function rebindAndVerifyPaneIdentity(input: {
     try {
       lineageMatch = findExactNativeResumeProcess(
         // Full rows (process group, OS executable): the strict finder's launcher rules need them.
-        await (input.listProcesses ?? listNativeProcesses)(),
+        await (input.listProcesses ?? (panePid => listNativeProcesses({ panePid })))(pid),
         pid,
         input.runtime,
         expectedResumeToken!,

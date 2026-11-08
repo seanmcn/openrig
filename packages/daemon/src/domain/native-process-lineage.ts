@@ -572,17 +572,22 @@ function mayBeClaudeRuntime(row: NativeProcessRow): boolean {
 
 /** The same OS observation serves menu input, restore proof and periodic identity.
  * Older callers may carry only pid/ppid/command; that is insufficient positive Codex proof. */
-export async function listNativeProcesses(options: { claudeLaunchPaths?: boolean; frozenExecutable?: string } = {}): Promise<NativeProcessRow[]> {
+export async function listNativeProcesses(options: { claudeLaunchPaths?: boolean; frozenExecutable?: string; panePid?: number } = {}): Promise<NativeProcessRow[]> {
   try {
     // Copies: the table is shared with concurrent readers, and executable paths are added below.
     const rows: NativeProcessRow[] = (await runAsyncSite("codex.runtime.list_processes", readProcessTable)).map((row) => ({ ...row }));
+    const paneGroup = options.panePid === undefined ? undefined : rows.find(row => row.pid === options.panePid)?.tpgid;
+    // Keep the full table for ancestry and ambiguity checks; only enrich rows that could match this pane's foreground.
+    const canMatchPane = (row: NativeProcessRow) => options.panePid === undefined
+      || (paneGroup !== undefined && paneGroup > 0 && row.pgid === paneGroup && row.tpgid === paneGroup);
     // `claudeLaunchPaths`: the caller is proving a launch through a `#!` script, which needs the OS path of the
     // foreground path-named Claude too. `frozenExecutable`: the caller is proving a launch that froze that file (the
     // installer's symlink resolved to its versioned file), which needs the path only of a path-named Claude whose
     // argv[0] isn't already the file; an exact launch is proved without it, and a helper timeout can't change its
     // fingerprint. Every other listing skips that read (on macOS it starts a helper process).
-    const candidates = rows.filter(row => needsClaudeExecutablePath(row) || (mayBeClaudeAfterScript(row) && (options.claudeLaunchPaths === true
-      || (!!options.frozenExecutable && tokens(row.command)[0] !== options.frozenExecutable))));
+    const candidates = rows.filter(row => canMatchPane(row)
+      && (needsClaudeExecutablePath(row) || (mayBeClaudeAfterScript(row) && (options.claudeLaunchPaths === true
+        || (!!options.frozenExecutable && tokens(row.command)[0] !== options.frozenExecutable)))));
     if (candidates.length > 0) {
       const paths = await readNativeExecutablePaths(candidates.map(row => row.pid));
       for (const row of candidates) row.executablePath = paths.get(row.pid);
@@ -592,7 +597,7 @@ export async function listNativeProcesses(options: { claudeLaunchPaths?: boolean
     // Only foreground rows can be selected below. Skip macOS helper reads for
     // background Codex processes; every foreground seat still gets fresh argv.
     const codexCandidates = process.platform === "darwin"
-      ? rows.filter(row => row.executableName === "codex" && row.pgid !== undefined && row.pgid > 0 && row.pgid === row.tpgid)
+      ? rows.filter(row => row.executableName === "codex" && row.pgid !== undefined && row.pgid > 0 && row.pgid === row.tpgid && canMatchPane(row))
       : [];
     if (codexCandidates.length > 0) {
       // A failed or timed-out helper read loses argv evidence, not the process table.
@@ -604,7 +609,7 @@ export async function listNativeProcesses(options: { claudeLaunchPaths?: boolean
   } catch { return []; }
 }
 
-export type NativeProcessLister = () => NativeProcessRow[] | Promise<NativeProcessRow[]>;
+export type NativeProcessLister = (panePid?: number) => NativeProcessRow[] | Promise<NativeProcessRow[]>;
 
 /** One OS process, by pid and `ps` start time: a reused pid has another start time. */
 export interface ClaudeLaunchedProcess { pid: number; startedAt: string }
@@ -799,7 +804,8 @@ async function observeNativePaneProcess(input: {
   try {
     const pid = await input.tmux.getPanePid(input.target);
     if (!pid) return null;
-    const rows = await (input.listProcesses ?? (() => listNativeProcesses({ claudeLaunchPaths: input.scriptLaunch === true, frozenExecutable: input.selectedExecutable })))();
+    const rows = await (input.listProcesses ?? (panePid => listNativeProcesses({ claudeLaunchPaths: input.scriptLaunch === true,
+      frozenExecutable: input.selectedExecutable, panePid })))(pid);
     return selectNativeProcess(rows, pid, input.expectedToken, input.requireResume, runtime, input.selectedExecutable,
       runtime === "claude-code" ? input.rotation : undefined, input.scriptLaunch, input.requireArgv);
   } catch { return null; }
@@ -820,7 +826,7 @@ export async function observeCodexForkProcess(input: {
   try {
     const pid = await input.tmux.getPanePid(input.target);
     if (!pid || !input.parentToken) return null;
-    const rows = await (input.listProcesses ?? listNativeProcesses)();
+    const rows = await (input.listProcesses ?? (panePid => listNativeProcesses({ panePid })))(pid);
     const chain = launcherChain(nativeProcessCandidates(rows, pid, "codex"), rows);
     if (!chain?.length) return null;
     // A fork is positive history proof. Every chain link must have exact argv,
@@ -861,7 +867,7 @@ export async function claudeHookFromLaunchedProcess(input: {
   try {
     const panePid = await input.tmux.getPanePid(input.target);
     if (!panePid) return null;
-    const rows = await (input.listProcesses ?? listNativeProcesses)();
+    const rows = await (input.listProcesses ?? (targetPid => listNativeProcesses({ panePid: targetPid })))(panePid);
     const launched = selectNativeProcess(rows, panePid, input.launchToken, false, "claude-code");
     if (!launched) return null;
     const byPid = new Map(rows.map((row) => [row.pid, row]));
@@ -911,7 +917,8 @@ export async function observeClaudePaneRuntime(input: Omit<Parameters<typeof obs
   try {
     const pid = await input.tmux.getPanePid(input.target);
     if (!pid) return null;
-    const rows = await (input.listProcesses ?? (() => listNativeProcesses({ claudeLaunchPaths: input.scriptLaunch === true, frozenExecutable: input.selectedExecutable })))();
+    const rows = await (input.listProcesses ?? (panePid => listNativeProcesses({ claudeLaunchPaths: input.scriptLaunch === true,
+      frozenExecutable: input.selectedExecutable, panePid })))(pid);
     const candidates = nativeProcessCandidates(rows, pid, "claude-code", input.selectedExecutable, input.scriptLaunch);
     return candidates.length === 1 ? candidates[0]! : null;
   } catch { return null; }
@@ -1013,7 +1020,7 @@ export async function observeClaudeDelivery(
     try {
       const pid = await input.tmux.getPanePid(input.target);
       if (!pid) return unknown;
-      const rows = await (input.listProcesses ?? listNativeProcesses)();
+      const rows = await (input.listProcesses ?? (panePid => listNativeProcesses({ panePid })))(pid);
       const candidates = nativeProcessCandidates(rows, pid, "claude-code", input.selectedExecutable);
       const chain = launcherChain(candidates, rows);
       if (!chain) return { state: "conflict", detail: "Multiple Claude processes occupy the bound foreground" };
