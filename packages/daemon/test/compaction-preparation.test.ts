@@ -26,10 +26,7 @@ function fixture(manualPrepWaitMs:number|null=1000,guardDb?:Database.Database){
  const tmux={probeSession:vi.fn(async()=>({state:'present'})),sendText:vi.fn(async(_:string,text:string)=>{writes.push(text);return{ok:true};}),sendKeys:vi.fn(async(_:string,k:string[])=>{keys.push(k);return{ok:true};})};
  const guard=new SeatDeliveryGuard(db,()=>({nodeId:'node-one',session:seat,pane:'%1',occupant:generation}));
  Object.assign(tmux,{deliveryGuard:guard});
- // The transport's wait for idle ends on the real clock, so each of its sleeps also waits a few real milliseconds.
- // Without that, the wait polls as fast as the machine allows for its whole real duration, and every poll adds 5 ms to
- // the fake clock: a fast machine pushed it past an armed map's 10-minute grace in about a second of real time.
- const transport=new SessionTransport({db,rigRepo:{} as any,sessionRegistry:{} as any,tmuxAdapter:tmux as any,sleep:async(ms)=>{clock+=ms;await new Promise(r=>setTimeout(r,Math.min(ms,5)));},now:()=>new Date(clock),waitForIdlePollMs:5});
+ const transport=new SessionTransport({db,rigRepo:{} as any,sessionRegistry:{} as any,tmuxAdapter:tmux as any,sleep:async(ms)=>{clock+=ms;},now:()=>new Date(clock),waitForIdlePollMs:5});
  (transport as any).getSessionMeta=()=>({runtime:'claude-code',attachmentType:'tmux',nodeId:'node-one',pane:'%1',occupant:generation,resumeToken:'native-one'});
  (transport as any).claudeDeliveryObservation=async()=>({state:'unknown',detail:'injected process observation'});
  (transport as any).classifySendReadiness=async()=>({state:activity,reason:'fixture',evidenceSource:'fixture'});
