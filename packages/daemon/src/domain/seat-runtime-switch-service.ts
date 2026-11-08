@@ -37,6 +37,7 @@ import { CheckpointStore } from "./checkpoint-store.js";
 import { DeliveryGuardError } from "./seat-delivery-guard.js";
 import { heldMessagesNotice } from "./outbox-handler.js";
 import { seatCodexCorePluginDir, seatCorePluginDir, withPluginDirs } from "./claude-core-plugin-env.js";
+import { retireSeatCoreSkillCopies } from "./seat-skill-storage.js";
 import { planRuntimeSwitchMaterials, type RuntimeSwitchMaterials, type RuntimeSwitchMaterialsInput, type SwitchRuntime } from "./runtime-switch-materials.js";
 import { terminatePaneInPlace } from "./pane-cutover.js";
 import { inspectStartupStagedText, settleOwnStartupPaste, STARTUP_SUBMIT_CAPTURE_LINES, STARTUP_SUBMIT_RETRIES, waitForClaudeInputBox } from "./startup-submission-evidence.js";
@@ -252,6 +253,15 @@ export class SeatRuntimeSwitchService {
     if (node.runtime !== "codex" && node.runtime !== "claude-code" && node.runtime !== "pi") {
       return refuse("runtime_switch_unsupported", `${seatRef} runs ${node.runtime ?? "an unknown runtime"}; only Codex, Claude Code and Pi seats can change runtime.`);
     }
+    if (node.runtime === "pi" && target === "claude-code") {
+      try {
+        if (readSeatLaunchWrapper(db, node.id)?.length) {
+          return refuse("runtime_switch_failed", `${seatRef} has a launch_wrapper configured; switching a wrapped Pi seat to Claude Code is unsupported. Clear the wrapper and re-apply the rig spec first.`);
+        }
+      } catch (error) {
+        return refuse("runtime_switch_failed", (error as Error).message);
+      }
+    }
     if (target === "pi" && input.accountHome !== undefined) {
       try {
         const auth = nodePath.join(input.accountHome, "auth.json");
@@ -385,7 +395,7 @@ export class SeatRuntimeSwitchService {
       });
     } catch (error) { return failed((error as Error).message); }
     if (launchWrapper?.length && !isLaunchWrapperRuntime(target)) {
-      return failed(`${ctx.seatRef} has a launch_wrapper configured, which is only supported on Pi and Codex; switching to ${target} would unwrap the seat.`);
+      return failed(`${ctx.seatRef} has a launch_wrapper configured, which is only supported on Pi, Codex and Claude Code; switching to ${target} would unwrap the seat.`);
     }
     const successorGeneration = sessionRegistry.reserveOccupantGeneration();
     if (!successorGeneration) return failed("No occupant generation could be reserved for the successor (the tenure ledger is unavailable).");
@@ -457,7 +467,14 @@ export class SeatRuntimeSwitchService {
             fs.copyFileSync(nodePath.join(baseline, "auth.json"), nodePath.join(destination, "auth.json"));
           }
         }
-        return materials.prepare(binding, adapter);
+        // #2426: a Claude successor that loads the vendored openrig-core itself starts without OpenRig's earlier copies of
+        // its skills, as a launch does, when the runtime changes: the predecessor then runs the other runtime, from that
+        // runtime's own storage. A same-runtime account move shares this storage with the live predecessor, so its copies
+        // wait for the next ordinary launch. The kept copies go unnamed here: the switch's own reconciliation below decides
+        // what becomes of them, as it did before, and names a plugin copy it keeps.
+        const coreCopyNotes = corePluginDir && node.runtime !== target
+          ? retireSeatCoreSkillCopies(materials.seatSkills, corePluginDir, { namesKept: false }) : [];
+        return materials.prepare(binding, adapter).then((notes) => [...coreCopyNotes, ...notes]);
       },
         binding: { ...materials.bindingAdditions(),
           // Explicit nulls make adapters resolve target defaults without reading a legacy source token.
