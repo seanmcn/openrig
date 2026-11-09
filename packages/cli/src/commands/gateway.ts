@@ -253,7 +253,7 @@ export function gatewayCommand(deps: GatewayCommandDeps = {}): Command {
     .addHelpText("after", `
 Binding specification details:
   Format: <kind:connectorRef:secretsRef:role[:handle=<id>]>
-  - kind: Connector kind: "slack" or "relay"
+  - kind: Connector kind: "slack", "discord" or "relay"
   - connectorRef: Configuration label identifying the connector instance (e.g. "openrig-personal", "main", or "local-bridge")
   - secretsRef: Pointer or label identifying where secrets are resolved:
     * For Slack: "file:/path/to/slack.env" or "vault://slack/user". Credentials (like SLACK_BOT_TOKEN) are loaded from the connector's secrets env file (configured via 'rig slack setup --secrets-env-file').
