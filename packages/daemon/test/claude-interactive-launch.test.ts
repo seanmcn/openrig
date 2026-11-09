@@ -64,6 +64,10 @@ fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2),
     fs.writeFileSync(cli, "#!/bin/sh\nprintf 'paired-rig'\n", { mode: 0o755 });
     const cells: Array<{ shape: string; route: string; kind: string; started: boolean; exit: number; issues: string[] }> = [];
     try {
+      // An idle session keeps one server up across the cells. Without it each cell's kill-session ended the server's
+      // last session, so the next cell's new-session had to meet a server exiting and start another, and on a loaded
+      // host it failed with "server exited unexpectedly".
+      await tm(["new-session", "-d", "-s", "anchor", "sleep 3600"]);
       for (const shape of ["executable", "alias", "function"]) for (const route of ["corrected", "fallback", "legacy"]) {
         for (const kind of ["fresh", "fork", "launch-resume", "restore-resume"]) {
           const name = `${shape}-${route}-${kind}`, dir = path.join(root, name), bin = path.join(dir, "bin");
