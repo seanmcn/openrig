@@ -390,7 +390,13 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
   // stayed set aside, and a shared timer's attached task lost its wake.
   function scriptedEngine(statuses: Array<"ok" | "retained" | "failed">) {
     const deliveries: Array<{ targetSession: string; status: string }> = [];
+    // The real scheduler, on a test clock: each step moves past the 90 s interval and runs one tick, so only
+    // active, due jobs are evaluated. Steps stop once the job is no longer active (bounded here). The engine
+    // dates its history rows by the same clock: on the wall clock two fast ticks could share a millisecond, and
+    // rows that tie on evaluated_at fall back to their ulid's random tail, so the outcomes could read out of order.
+    let clock = Date.now();
     const engine = new WatchdogPolicyEngine({
+      now: () => new Date(clock),
       jobsRepo: jobs,
       historyLog: new WatchdogHistoryLog(db),
       eventBus: bus,
@@ -402,9 +408,6 @@ describe("S03 R25 — a park records its wake on the append-only transition", ()
       resolvePreDeliveryTerminalReason: ({ jobId }) => repo.resolveWatchdogPreDeliveryTerminalReason(jobId),
       onWakeAttempt: ({ jobId, deliveryStatus }) => repo.recordWatchdogWakeAttempt(jobId, deliveryStatus),
     });
-    // The real scheduler, on a test clock: each step moves past the 90 s interval and runs one tick, so only
-    // active, due jobs are evaluated. Steps stop once the job is no longer active (bounded here).
-    let clock = Date.now();
     const scheduler = new WatchdogScheduler({ jobsRepo: jobs, policyEngine: engine, now: () => new Date(clock) });
     const outcomesOf = (jobId: string) => (db.prepare(
       "SELECT outcome FROM watchdog_history WHERE job_id = ? ORDER BY evaluated_at, history_id",
