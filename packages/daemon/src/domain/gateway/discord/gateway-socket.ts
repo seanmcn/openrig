@@ -10,8 +10,10 @@
 // - closes itself on a missed heartbeat ack (a zombie connection), on Discord's RECONNECT and on an invalid session, and
 //   the loop's reconnect resumes;
 // - turns MESSAGE_CREATE and MESSAGE_REACTION_ADD into `events_api` envelopes and a button press (INTERACTION_CREATE) into
-//   an `interactive` block_actions envelope; acking a button's envelope answers Discord's interaction (deferred update),
-//   inside Discord's three seconds, as the loop acks first.
+//   an `interactive` block_actions envelope; a button press is answered (deferred update) the moment it arrives, inside
+//   Discord's three seconds, as Socket Mode envelopes are acked first;
+// - on a close code a retry can't fix (refused token, missing privileged intent) tells the loop the connection is disabled,
+//   so it stops instead of spending the day's identifies.
 //
 // Interactions only arrive on the Gateway when the application has no Interactions Endpoint URL. Reading what the person
 // writes needs the Message Content privileged intent, turned on in the developer portal.
@@ -78,25 +80,21 @@ export function createDiscordSocketFactory(deps: DiscordSocketDeps): DiscordSock
     let acked = true;
     let closed = false;
     let ready = false;
-    /** envelope id → the interaction it answers. */
-    const interactions = new Map<string, { id: string; token: string }>();
     /** Events are translated in order (a thread's parent may need a lookup first). */
     let chain: Promise<void> = Promise.resolve();
 
     const facing: WsLike = {
       onopen: null, onmessage: null, onclose: null, onerror: null,
-      send(data: string) {
-        let envelopeId: string | undefined;
-        try { envelopeId = (JSON.parse(data) as { envelope_id?: string }).envelope_id; } catch { return; }
-        const interaction = envelopeId ? interactions.get(envelopeId) : undefined;
-        if (!interaction) return; // a message event needs no ack on Discord
-        interactions.delete(envelopeId!);
-        // Type 6: deferred update. The click is acknowledged and the message stays as it is; what the click did is posted
-        // in the thread by the inbound router, as on Slack.
-        void deps.rest.request("POST", `/interactions/${interaction.id}/${interaction.token}/callback`, { type: 6 })
-          .then((r) => { if (r.status >= 300) log(`discord: interaction ${interaction.id} ack failed: ${r.error ?? r.status}`); });
-      },
+      // The loop acks each envelope here. Discord needs no ack for an event, and a button press is acknowledged as it
+      // arrives (ackInteraction), so its three seconds never wait behind earlier events in the chain.
+      send() {},
       close() { shut(RESUMABLE_CLOSE); },
+    };
+    /** Type 6, deferred update: the press is acknowledged and the message stays as it is; what it did is posted in the
+     *  thread by the inbound router, as on Slack. Fast-ack first, as Socket Mode envelopes are. */
+    const ackInteraction = (id: string, token: string) => {
+      void deps.rest.request("POST", `/interactions/${id}/${token}/callback`, { type: 6 })
+        .then((r) => { if (r.status >= 300) log(`discord: interaction ${id} ack failed: ${r.error ?? r.status}`); });
     };
 
     const send = (payload: Payload) => { try { ws.send(JSON.stringify(payload)); } catch { /* closing */ } };
@@ -146,9 +144,7 @@ export function createDiscordSocketFactory(deps: DiscordSocketDeps): DiscordSock
       const channel = parent ?? d.channel_id;
       const ts = deps.ids.tsFor(d.message.id);
       const threadTs = parent ? deps.ids.tsFor(d.channel_id) : undefined;
-      const id = envelopeId();
-      interactions.set(id, { id: d.id, token: d.token });
-      emit({ envelope_id: id, type: "interactive", payload: {
+      emit({ envelope_id: envelopeId(), type: "interactive", payload: {
         type: "block_actions",
         user: { id: d.member?.user?.id ?? d.user?.id },
         channel: { id: channel },
@@ -182,7 +178,9 @@ export function createDiscordSocketFactory(deps: DiscordSocketDeps): DiscordSock
           return;
         case "MESSAGE_CREATE": chain = chain.then(() => onMessageCreate(d)).catch((e) => log(`discord: message not delivered inbound: ${(e as Error).message}`)); return;
         case "MESSAGE_REACTION_ADD": chain = chain.then(() => onReaction(d)).catch((e) => log(`discord: reaction not delivered inbound: ${(e as Error).message}`)); return;
-        case "INTERACTION_CREATE": chain = chain.then(() => onInteraction(d)).catch((e) => log(`discord: click not delivered inbound: ${(e as Error).message}`)); return;
+        case "INTERACTION_CREATE":
+          if (d?.type === 3 && typeof d.id === "string" && typeof d.token === "string") ackInteraction(d.id, d.token);
+          chain = chain.then(() => onInteraction(d)).catch((e) => log(`discord: click not delivered inbound: ${(e as Error).message}`)); return;
         default: return;
       }
     };
@@ -212,7 +210,12 @@ export function createDiscordSocketFactory(deps: DiscordSocketDeps): DiscordSock
     };
     ws.onclose = (ev?: unknown) => {
       const code = Number((ev as { code?: unknown } | undefined)?.code);
-      if (FATAL_CLOSE[code]) log(`discord gateway: closed ${code}: ${FATAL_CLOSE[code]}`);
+      if (FATAL_CLOSE[code]) {
+        // Retrying can't fix this, and each retry spends one of the day's identifies: tell the loop the connection is
+        // disabled, as Slack's `link_disabled` does, so it stops until the connector is re-enabled or the daemon restarts.
+        log(`discord gateway: closed ${code}: ${FATAL_CLOSE[code]}; not reconnecting until the connector is re-enabled or the daemon restarts`);
+        emit({ type: "disconnect", reason: "link_disabled" });
+      }
       if (SESSION_LOST.has(code)) { session.id = undefined; session.resumeUrl = undefined; session.seq = null; }
       if (closed) return;
       closed = true;

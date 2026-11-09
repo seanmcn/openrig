@@ -75,7 +75,10 @@ ones still open.
 | `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` | `DISCORD_BOT_TOKEN` alone |
 
 The connector shares the gateway's state files (`state/slack-*.jsonl`), so posts already made
-through Slack aren't made again after the switch.
+through Slack aren't made again after the switch. Threads started in Slack stay there: recovery
+only scans the Discord channels configured, and an update replying to a Slack-era thread posts as a
+new message in Discord. A Discord inline reply (the Reply action) in the channel is a post outside
+any thread, as a Slack channel message is; to answer an ask, reply in its thread.
 
 ## Not offered on Discord
 

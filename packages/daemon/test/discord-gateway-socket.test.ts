@@ -99,19 +99,23 @@ describe("the Discord Gateway as a Socket Mode socket", () => {
     await vi.waitFor(() => expect(envelopes.at(-1)?.payload?.event).toMatchObject({ channel: CH, thread_ts: ids.tsFor(root.id) }));
   });
 
-  it("a button press is a block_actions envelope, and its ack answers the interaction", async () => {
-    const { ws, facing } = connect();
-    ws.dispatch("GUILD_CREATE", { channels: [{ id: CH, type: 0 }] });
+  it("a button press is a block_actions envelope, answered to Discord as it arrives, ahead of slower events", async () => {
+    const { ws } = connect();
     const msg = discord.write(CH, "ask", { id: BOT_ID, username: "openrig", bot: true });
+    // An earlier event in an unknown thread needs a lookup first; the press behind it is still answered at once.
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const slowLookup = discord.request.bind(discord);
+    discord.request = async (method, path, ...rest) => { if (path === "/channels/555555555555555555") await held; return slowLookup(method, path, ...rest); };
+    ws.dispatch("MESSAGE_CREATE", { id: discord.nextId(), guild_id: GUILD, channel_id: "555555555555555555", type: 0, content: "x", author: { id: PERSON } });
     ws.dispatch("INTERACTION_CREATE", { id: "910000000000000001", token: "itok", type: 3, guild_id: GUILD, channel_id: CH,
       data: { custom_id: "or-q:ship|or-opt:yes", component_type: 2 }, message: { id: msg.id }, member: { user: { id: PERSON } } });
     await flush();
-    const env = envelopes.at(-1);
-    expect(env).toMatchObject({ type: "interactive", payload: { type: "block_actions", user: { id: PERSON }, channel: { id: CH },
-      container: { message_ts: ids.tsFor(msg.id), channel_id: CH }, actions: [{ block_id: "or-q:ship", action_id: "or-opt:yes", value: "yes" }] } });
-    facing.send(JSON.stringify({ envelope_id: env.envelope_id }));
-    await flush();
     expect(discord.callbacks).toEqual([{ id: "910000000000000001", token: "itok", body: { type: 6 } }]);
+    release();
+    await vi.waitFor(() => expect(envelopes.some((e) => e.type === "interactive")).toBe(true));
+    expect(envelopes.find((e) => e.type === "interactive")).toMatchObject({ payload: { type: "block_actions", user: { id: PERSON }, channel: { id: CH },
+      container: { message_ts: ids.tsFor(msg.id), channel_id: CH }, actions: [{ block_id: "or-q:ship", action_id: "or-opt:yes", value: "yes" }] } });
   });
 
   it("a missed heartbeat ack closes the connection, and the next one resumes the session", () => {
@@ -142,10 +146,18 @@ describe("the Discord Gateway as a Socket Mode socket", () => {
     expect(next.sent.some((p) => p.op === 6)).toBe(false);
   });
 
-  it("a refused privileged intent is named", () => {
+  it("a refused privileged intent is named, and the loop is told to stop rather than identify again", () => {
     const { ws } = connect();
     ws.onclose?.({ code: 4014 });
     expect(logs.some((l) => l.includes("Message Content"))).toBe(true);
+    expect(envelopes.at(-1)).toEqual({ type: "disconnect", reason: "link_disabled" });
+    expect(closes).toBe(1);
+  });
+
+  it("an ordinary drop is a plain close the loop reconnects from", () => {
+    const { ws } = connect();
+    ws.onclose?.({ code: 1006 });
+    expect(envelopes.some((e) => e.type === "disconnect")).toBe(false);
     expect(closes).toBe(1);
   });
 });

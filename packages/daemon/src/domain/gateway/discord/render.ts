@@ -18,7 +18,8 @@ const BUTTON_LABEL_CAP = 80;
 const CUSTOM_ID_CAP = 100;
 const MAX_ROWS = 5;
 const MAX_BUTTONS = 5;
-const MAX_EMBEDS = 10;
+const MAX_EMBEDS = 9; // ten per message, one kept for a long ask's root text
+const EMBED_DESCRIPTION_CAP = 4096;
 const RECOMMENDED = " (recommended)";
 
 export const DISCORD_BUTTON_STYLE = { primary: 1, secondary: 2, success: 3 } as const;
@@ -231,20 +232,31 @@ export function renderSlackPost(post: { text: string; blocks?: unknown[] }): Ren
   });
   if (rows.length > MAX_ROWS) throw new DiscordRenderError(`${rows.length} questions; Discord shows at most ${MAX_ROWS} button rows on a message`);
   if (embeds.length > MAX_EMBEDS) throw new DiscordRenderError(`${embeds.length} images; Discord shows at most ${MAX_EMBEDS} on a message`);
-  if (marker) head.push(`-# ${marker}`);
-
-  const headPieces = splitContent(head.join("\n"));
   const restPieces = splitContent(rest.join("\n"));
-  const messages: DiscordMessageBody[] = [
-    ...headPieces.map((content, i) => ({
+  const headText = head.join("\n");
+  let headMessages: DiscordMessageBody[];
+  if (ask && headText.length + (marker ? marker.length + 4 : 0) > DISCORD_CONTENT_CAP) {
+    // An ask's questions and buttons stay on its root, whatever their length: the root's text rides in an embed (4096
+    // characters), and the content keeps the mention, which only content pings, and the reconcile marker.
+    if (headText.length > EMBED_DESCRIPTION_CAP) {
+      throw new DiscordRenderError(`the ask's headline and questions are ${headText.length} characters; Discord shows at most ${EMBED_DESCRIPTION_CAP} on one message`);
+    }
+    const content = [mentions.map((id) => `<@${id}>`).join(" "), marker ? `-# ${marker}` : ""].filter(Boolean).join("\n") || "​";
+    headMessages = [{ content, embeds: [{ description: headText }], allowed_mentions: allowRoot, ...(rows.length ? { components: rows } : {}) }];
+  } else {
+    // Only a non-ask's text is split across messages; an ask's root fits here, buttons and all.
+    const headPieces = splitContent([headText, marker ? `-# ${marker}` : ""].filter(Boolean).join("\n"));
+    headMessages = headPieces.map((content, i) => ({
       content,
       allowed_mentions: i === 0 ? allowRoot : allowRest,
-      // The buttons follow their questions: on the last piece of the root text.
-      ...(rows.length && i === headPieces.length - 1 ? { components: rows } : {}),
-    })),
-    ...restPieces.map((content) => ({ content, allowed_mentions: allowRest })),
-  ];
+      ...(rows.length && i === 0 ? { components: rows } : {}),
+    }));
+  }
+  const messages: DiscordMessageBody[] = [...headMessages, ...restPieces.map((content) => ({ content, allowed_mentions: allowRest }))];
   if (!messages.length) messages.push({ content: "​", allowed_mentions: allowRoot, ...(rows.length ? { components: rows } : {}) });
-  if (embeds.length) messages[messages.length - 1] = { ...messages[messages.length - 1]!, embeds };
-  return { messages, opensThread: ask || messages.length > 1, ask, threadName: threadTitle(headline || headPieces[0] || "") };
+  if (embeds.length) {
+    const last = messages[messages.length - 1]!;
+    messages[messages.length - 1] = { ...last, embeds: [...(last.embeds ?? []), ...embeds] };
+  }
+  return { messages, opensThread: ask || messages.length > 1, ask, threadName: threadTitle(headline || headText) };
 }

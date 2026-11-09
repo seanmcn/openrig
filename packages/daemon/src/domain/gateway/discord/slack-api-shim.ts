@@ -53,19 +53,16 @@ export function toSlackMessage(m: DiscordMessage, ids: DiscordIdMap, opts: { thr
   if (m.type !== undefined && m.type !== 0 && m.type !== 19) out.subtype = `discord_type_${m.type}`;
   if (opts.threadTs) out.thread_ts = opts.threadTs;
   else if (m.thread?.id) out.thread_ts = ts;
-  else if (m.type === 19 && isSnowflake(m.message_reference?.message_id) && (!m.message_reference?.channel_id || m.message_reference.channel_id === m.channel_id)) {
-    // An inline reply to a message in the channel is a reply to that message's conversation.
-    out.thread_ts = ids.tsFor(m.message_reference.message_id);
-  }
+  // An inline reply (type 19) in the channel is a post outside any thread, as a Slack channel message is: parity only.
   if (m.attachments?.length) {
-    out.files = m.attachments.map((a) => ({ id: a.id, name: a.filename, mimetype: a.content_type, size: a.size, url_private: a.url }));
+    out.files = m.attachments.map((file) => ({ id: file.id, name: file.filename, mimetype: file.content_type, size: file.size, url_private: file.url }));
   }
   const stored = opts.posted?.get(m.id);
   if (stored) { out.text = stored.text; out.blocks = stored.blocks; }
   return out;
 }
 
-interface PostedRecord { id: string; channelId?: string; text: string; blocks: unknown[]; root: { content: string; components: DiscordActionRow[] } }
+interface PostedRecord { id: string; channelId?: string; text: string; blocks: unknown[]; root: { content: string; components: DiscordActionRow[]; embeds?: DiscordMessageBody["embeds"] } }
 
 /** The Slack text and blocks of each ask OpenRig posted, and its rendered root, keyed by the root's id: what settlement
  *  reads back and edits. Latest record wins. */
@@ -151,17 +148,17 @@ export function createSlackApiShim(deps: SlackApiShimDeps, passThrough: FetchImp
     return r;
   }
 
-  async function postMessage(a: Record<string, unknown>): Promise<Response> {
-    const channel = String(a.channel ?? "");
+  async function postMessage(args: Record<string, unknown>): Promise<Response> {
+    const channel = String(args.channel ?? "");
     let rendered;
     try {
-      rendered = renderSlackPost({ text: String(a.text ?? ""), blocks: Array.isArray(a.blocks) ? a.blocks : undefined });
+      rendered = renderSlackPost({ text: String(args.text ?? ""), blocks: Array.isArray(args.blocks) ? args.blocks : undefined });
     } catch (e) {
       if (e instanceof DiscordRenderError) { log(`discord: refused a post Discord can't show: ${e.message}`); return respond({ ok: false, error: "invalid_blocks" }); }
       throw e;
     }
-    const [first, ...rest_] = rendered.messages;
-    const threadTs = typeof a.thread_ts === "string" && a.thread_ts ? a.thread_ts : undefined;
+    const [first, ...following] = rendered.messages;
+    const threadTs = typeof args.thread_ts === "string" && args.thread_ts ? args.thread_ts : undefined;
     let rootId = threadTs ? ids.snowflakeFor(threadTs) : null;
     let threaded = Boolean(rootId);
     let r: DiscordResponse | "gone";
@@ -176,29 +173,29 @@ export function createSlackApiShim(deps: SlackApiShimDeps, passThrough: FetchImp
     const ts = ids.tsFor(id);
     // The rest of the post: in the same thread, or a thread opened from this root. A part that won't post is logged; the
     // root, which carries the ask's buttons and its reconcile marker, is the post.
-    for (const body of rest_) {
+    for (const body of following) {
       const part = await postInThread(threaded ? rootId! : id, channel, rendered.threadName, body);
       if (part === "gone" || part.status !== 200) log(`discord: part of post ${ts} not posted in its thread: ${part === "gone" ? "root gone" : slackError(part)}`);
     }
-    if (!threaded && rendered.opensThread && !rest_.length) {
+    if (!threaded && rendered.opensThread && !following.length) {
       // An ask with no why still opens its thread, where the person answers.
       const created = await rest.request("POST", `/channels/${channel}/messages/${id}/threads`, { name: rendered.threadName, auto_archive_duration: THREAD_ARCHIVE_MINUTES });
       if (created.status === 200 || created.status === 201) channels.note(created.json);
       else log(`discord: thread for ${ts} not opened: ${slackError(created)}`);
     }
     if (rendered.ask) {
-      posted.put({ id, channelId: String(r.json.channel_id ?? (threaded ? rootId : channel)), text: String(a.text ?? ""),
-        blocks: Array.isArray(a.blocks) ? a.blocks : [], root: { content: first!.content, components: first!.components ?? [] } });
+      posted.put({ id, channelId: String(r.json.channel_id ?? (threaded ? rootId : channel)), text: String(args.text ?? ""),
+        blocks: Array.isArray(args.blocks) ? args.blocks : [], root: { content: first!.content, components: first!.components ?? [], ...(first!.embeds ? { embeds: first!.embeds } : {}) } });
     }
     return respond({ ok: true, channel, ts, message: { ts, ...(threaded ? { thread_ts: threadTs } : {}) } });
   }
 
-  async function update(a: Record<string, unknown>): Promise<Response> {
-    const ts = String(a.ts ?? "");
+  async function update(args: Record<string, unknown>): Promise<Response> {
+    const ts = String(args.ts ?? "");
     const id = ids.snowflakeFor(ts);
     if (!id) return respond({ ok: false, error: "message_not_found" });
-    const channel = String(a.channel ?? "");
-    const blocks = Array.isArray(a.blocks) ? a.blocks as Array<{ block_id?: string; type?: string; elements?: Array<{ text?: string }> }> : [];
+    const channel = String(args.channel ?? "");
+    const blocks = Array.isArray(args.blocks) ? args.blocks as Array<{ block_id?: string; type?: string; elements?: Array<{ text?: string }> }> : [];
     const record = posted.get(id);
     let body: Record<string, unknown>;
     if (record) {
@@ -206,27 +203,30 @@ export function createSlackApiShim(deps: SlackApiShimDeps, passThrough: FetchImp
       // and the reply hints, which no longer apply, go.
       const status = blocks.find((b) => b.block_id === STATUS_BLOCK)?.elements?.[0]?.text;
       const live = blocks.some((b) => b.type === "actions");
-      const lines = record.root.content.split("\n").filter((line) => live || !/^-# (Or reply|Reply) in this thread/.test(line));
-      const content = splitContent([status ? `-# ${renderSlackPost({ text: status }).messages[0]!.content}` : "", ...lines].filter(Boolean).join("\n"))[0]!;
-      body = { content, components: record.root.components.map((row) => ({ ...row, components: row.components.map((b) => ({ ...b, disabled: !live })) })), allowed_mentions: { parse: [] } };
+      const withoutHints = (text: string) => text.split("\n").filter((line) => live || !/^-# (Or reply|Reply) in this thread/.test(line));
+      const content = splitContent([status ? `-# ${renderSlackPost({ text: status }).messages[0]!.content}` : "", ...withoutHints(record.root.content)].filter(Boolean).join("\n"))[0]!;
+      // A long ask's root text is in an embed: the hints go from there too.
+      const embeds = record.root.embeds?.map((e) => (e.description ? { ...e, description: withoutHints(e.description).join("\n") } : e));
+      body = { content, ...(embeds ? { embeds } : {}), allowed_mentions: { parse: [] },
+        components: record.root.components.map((row) => ({ ...row, components: row.components.map((b) => ({ ...b, disabled: !live })) })) };
     } else {
       let rendered;
-      try { rendered = renderSlackPost({ text: String(a.text ?? ""), blocks }); } catch { return respond({ ok: false, error: "invalid_blocks" }); }
+      try { rendered = renderSlackPost({ text: String(args.text ?? ""), blocks }); } catch { return respond({ ok: false, error: "invalid_blocks" }); }
       body = { content: rendered.messages[0]!.content, components: rendered.messages[0]!.components ?? [], allowed_mentions: { parse: [] } };
     }
     // An ask posted into a person's thread lives in that thread's channel, which its record names.
     const r = await rest.request("PATCH", `/channels/${record?.channelId ?? channel}/messages/${id}`, body);
     if (r.status !== 200) return fail(r);
-    if (record) posted.put({ ...record, text: String(a.text ?? record.text), blocks });
+    if (record) posted.put({ ...record, text: String(args.text ?? record.text), blocks });
     return respond({ ok: true, channel, ts });
   }
 
   /** Channel history: newest first, strictly inside (oldest, latest), `limit` per page, a cursor while there's more. */
-  async function history(a: Record<string, unknown>): Promise<Response> {
-    const channel = String(a.channel ?? "");
-    const limit = Math.max(1, Math.min(100, Number(a.limit ?? 100) || 100));
-    const inclusive = a.inclusive === true || a.inclusive === "true";
-    const latest = typeof a.latest === "string" ? a.latest : undefined;
+  async function history(args: Record<string, unknown>): Promise<Response> {
+    const channel = String(args.channel ?? "");
+    const limit = Math.max(1, Math.min(100, Number(args.limit ?? 100) || 100));
+    const inclusive = args.inclusive === true || args.inclusive === "true";
+    const latest = typeof args.latest === "string" ? args.latest : undefined;
     if (inclusive && latest && limit === 1) {
       const id = ids.snowflakeFor(latest);
       if (!id) return respond({ ok: true, messages: [], has_more: false });
@@ -235,8 +235,8 @@ export function createSlackApiShim(deps: SlackApiShimDeps, passThrough: FetchImp
       if (r.status !== 200) return fail(r);
       return respond({ ok: true, messages: [toSlackMessage(r.json, ids, { posted })], has_more: false });
     }
-    const oldest = typeof a.oldest === "string" ? slackMicros(a.oldest) : null;
-    const cursor = typeof a.cursor === "string" && isSnowflake(a.cursor) ? a.cursor : undefined;
+    const oldest = typeof args.oldest === "string" ? slackMicros(args.oldest) : null;
+    const cursor = typeof args.cursor === "string" && isSnowflake(args.cursor) ? args.cursor : undefined;
     const before = cursor ?? (latest ? ids.snowflakeFor(latest) ?? DiscordIdMap.boundFor(latest) : undefined);
     const q = new URLSearchParams({ limit: String(limit), ...(before ? { before } : {}) });
     const r = await rest.request("GET", `/channels/${channel}/messages?${q}`);
@@ -255,13 +255,13 @@ export function createSlackApiShim(deps: SlackApiShimDeps, passThrough: FetchImp
 
   /** Thread replies: oldest first, after `oldest`, before `latest`, each naming its root. A message nobody has threaded
    *  has no replies; Slack would return the root alone, which every caller drops. */
-  async function replies(a: Record<string, unknown>): Promise<Response> {
-    const threadTs = String(a.ts ?? "");
+  async function replies(args: Record<string, unknown>): Promise<Response> {
+    const threadTs = String(args.ts ?? "");
     const threadId = ids.snowflakeFor(threadTs);
     if (!threadId) return respond({ ok: false, error: "thread_not_found" });
-    const limit = Math.max(1, Math.min(100, Number(a.limit ?? 100) || 100));
-    const inclusive = a.inclusive === true || a.inclusive === "true";
-    const oldestTs = typeof a.oldest === "string" ? a.oldest : undefined;
+    const limit = Math.max(1, Math.min(100, Number(args.limit ?? 100) || 100));
+    const inclusive = args.inclusive === true || args.inclusive === "true";
+    const oldestTs = typeof args.oldest === "string" ? args.oldest : undefined;
     if (inclusive && oldestTs && limit === 1) {
       const id = ids.snowflakeFor(oldestTs);
       if (!id) return respond({ ok: true, messages: [], has_more: false });
@@ -270,14 +270,14 @@ export function createSlackApiShim(deps: SlackApiShimDeps, passThrough: FetchImp
       if (r.status !== 200) return fail(r);
       return respond({ ok: true, messages: [toSlackMessage(r.json, ids, { threadTs, posted })], has_more: false });
     }
-    const cursor = typeof a.cursor === "string" && isSnowflake(a.cursor) ? a.cursor : undefined;
+    const cursor = typeof args.cursor === "string" && isSnowflake(args.cursor) ? args.cursor : undefined;
     const after = cursor ?? (oldestTs ? ids.snowflakeFor(oldestTs) ?? DiscordIdMap.boundFor(oldestTs) : "0");
     const r = await rest.request("GET", `/channels/${threadId}/messages?${new URLSearchParams({ limit: String(limit), after })}`);
     if (r.code === 10003) return respond({ ok: true, messages: [], has_more: false });
     if (r.status !== 200) return fail(r);
     const page = ((Array.isArray(r.json) ? r.json : []) as DiscordMessage[]).sort((x, y) => (BigInt(x.id) < BigInt(y.id) ? -1 : 1));
     const oldest = oldestTs ? slackMicros(oldestTs) : null;
-    const latest = typeof a.latest === "string" ? slackMicros(a.latest) : null;
+    const latest = typeof args.latest === "string" ? slackMicros(args.latest) : null;
     const mapped = page.filter((m) => m.type !== 21).map((m) => toSlackMessage(m, ids, { threadTs, posted }));
     const inWindow = mapped.filter((m) => {
       const t = slackMicros(m.ts)!;
@@ -288,17 +288,17 @@ export function createSlackApiShim(deps: SlackApiShimDeps, passThrough: FetchImp
     return respond({ ok: true, messages: inWindow, has_more: more, response_metadata: { next_cursor: more ? page.at(-1)!.id : "" } });
   }
 
-  async function completeUpload(a: Record<string, unknown>): Promise<Response> {
-    const list = (Array.isArray(a.files) ? a.files : []) as Array<{ id?: string; title?: string }>;
+  async function completeUpload(args: Record<string, unknown>): Promise<Response> {
+    const list = (Array.isArray(args.files) ? args.files : []) as Array<{ id?: string; title?: string }>;
     const files: DiscordFile[] = [];
     for (const f of list) {
       const held = uploads.get(String(f.id));
       if (!held?.bytes) return respond({ ok: false, error: "file_not_found" });
       files.push({ name: held.filename, bytes: held.bytes, ...(f.title ? { description: f.title.slice(0, 1024) } : {}) });
     }
-    const channel = String(a.channel_id ?? "");
-    const body = { content: splitContent(String(a.initial_comment ?? ""))[0] ?? "", allowed_mentions: { parse: [], users: [] } };
-    const rootId = typeof a.thread_ts === "string" ? ids.snowflakeFor(a.thread_ts) : null;
+    const channel = String(args.channel_id ?? "");
+    const body = { content: splitContent(String(args.initial_comment ?? ""))[0] ?? "", allowed_mentions: { parse: [], users: [] } };
+    const rootId = typeof args.thread_ts === "string" ? ids.snowflakeFor(args.thread_ts) : null;
     let r = rootId ? await postInThread(rootId, channel, "Attachments", body, files) : await rest.request("POST", `/channels/${channel}/messages`, body, files);
     if (r === "gone") r = await rest.request("POST", `/channels/${channel}/messages`, body, files);
     for (const f of list) uploads.delete(String(f.id));
@@ -318,7 +318,7 @@ export function createSlackApiShim(deps: SlackApiShimDeps, passThrough: FetchImp
     }
     if (!url.href.startsWith(SLACK_API)) return passThrough(input, init);
     const method = url.pathname.slice("/api/".length);
-    const a = readArgs(url, init);
+    const args = readArgs(url, init);
     try {
       switch (method) {
         case "auth.test": {
@@ -329,20 +329,20 @@ export function createSlackApiShim(deps: SlackApiShimDeps, passThrough: FetchImp
           const r = await rest.request("GET", "/gateway/bot");
           return r.status === 200 && typeof r.json.url === "string" ? respond({ ok: true, url: `${r.json.url}/?v=10&encoding=json` }) : fail(r);
         }
-        case "chat.postMessage": return await postMessage(a);
-        case "chat.update": return await update(a);
-        case "conversations.history": return await history(a);
-        case "conversations.replies": return await replies(a);
+        case "chat.postMessage": return await postMessage(args);
+        case "chat.update": return await update(args);
+        case "conversations.history": return await history(args);
+        case "conversations.replies": return await replies(args);
         case "conversations.info": {
-          const r = await rest.request("GET", `/channels/${String(a.channel ?? "")}`);
+          const r = await rest.request("GET", `/channels/${String(args.channel ?? "")}`);
           return r.status === 200 ? respond({ ok: true, channel: { id: r.json.id, name: r.json.name, is_member: true } }) : fail(r);
         }
         case "files.getUploadURLExternal": {
           const fileId = `F${randomUUID().replace(/-/g, "")}`;
-          uploads.set(fileId, { filename: String(a.filename ?? "file") });
+          uploads.set(fileId, { filename: String(args.filename ?? "file") });
           return respond({ ok: true, upload_url: `${UPLOAD_HOST}${fileId}`, file_id: fileId });
         }
-        case "files.completeUploadExternal": return await completeUpload(a);
+        case "files.completeUploadExternal": return await completeUpload(args);
         default:
           // bots.info, users.list, conversations.list: Slack-only features (named-bot inbox, directory) Discord doesn't offer.
           return respond({ ok: false, error: "not_supported_on_discord" });
