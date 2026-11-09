@@ -56,6 +56,18 @@ describe("rig discord", () => {
     expect(process.exitCode).toBeUndefined();
   });
 
+  it("setup won't replace a relay primary binding; it says how to do it on purpose", async () => {
+    const f = fixture(0);
+    addHumanFragment({ entityId: "rel", class: "human", displayName: "R", address: "rel@external",
+      connectorBindings: [{ kind: "relay", connectorRef: "phone", secretsRef: "env:RELAY", role: "primary", handle: "r1" }],
+      prefs: { deliveryClass: "B" } }, f.home);
+    await f.run("setup", "--user", "111111111111111111");
+    expect(process.exitCode).toBe(1);
+    expect(f.logs.at(-1)).toContain("is a relay (phone), which setup won't replace");
+    const shown = showHuman("rel", f.home);
+    expect(shown.ok && shown.record.connectorBindings[0]!.kind).toBe("relay");
+  });
+
   it("status names what's missing without the daemon", async () => {
     const f = fixture();
     await f.run("status");

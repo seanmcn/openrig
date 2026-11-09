@@ -5,6 +5,7 @@ import { mappedChannels } from "./slack/channel-map.js";
 import { loadRelayProfiles, type LoadRelayProfilesResult } from "./relay-config.js";
 import type { SecretFsOps } from "./slack/secrets.js";
 import { verifyDiscordChannel } from "./discord/verify.js";
+import type { ChatConnectorKind } from "./chat-connector.js";
 
 export type HumanDeliveryReadinessState = "ready" | "not-ready" | "indeterminate";
 
@@ -27,7 +28,7 @@ export interface HumanDeliveryReadinessInput {
   gatewayState: string;
   botToken: string | null;
   /** The chat connector `config` and `botToken` belong to (default slack). */
-  connectorKind?: "slack" | "discord";
+  connectorKind?: ChatConnectorKind;
   /** Optional preloaded relay profiles; when omitted for a relay primary binding, loaded from the full human registry. */
   relayProfiles?: LoadRelayProfilesResult | null;
   home?: string;

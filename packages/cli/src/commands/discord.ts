@@ -98,6 +98,13 @@ export function discordCommand(deps: DiscordDeps = {}): Command {
         const bindings = shown.record.connectorBindings;
         const slot = bindings.findIndex((b) => b.role === "primary");
         const spec = `discord:main:env:DISCORD_BOT_TOKEN:primary:handle=${opts.user}`;
+        // Slack gives way to Discord (one chat connector at a time); a relay reaches the person some other way, so
+        // replacing it is a choice to make explicitly, not a side effect of setup.
+        if (slot >= 0 && bindings[slot]!.kind === "relay") {
+          log(`✗ ${who.entityId}'s primary binding is a relay (${bindings[slot]!.connectorRef}), which setup won't replace. To move them to Discord: rig gateway human set ${who.entityId} binding.${slot} "${spec}"`);
+          process.exitCode = 1;
+          return;
+        }
         if (slot < 0) {
           log(`✗ ${who.entityId} has no primary binding to replace: rig gateway human set ${who.entityId} binding.0 "${spec}" after adding one, or re-add them with --binding "${spec}"`);
           process.exitCode = 1;

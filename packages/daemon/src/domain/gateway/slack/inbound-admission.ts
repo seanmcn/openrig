@@ -12,6 +12,7 @@
 //                              channel is one participant; its customers aren't registered one by one.
 
 import type { InboundSenderResolution, SharedChannelContext } from "./inbound.js";
+import type { ChatConnectorKind } from "../chat-connector.js";
 // S10 re-home: this module now lives IN the daemon, so the registry surface types resolve
 // relatively (the lazy-import dep rail was a CLI concern; the injectable surface stays for tests).
 import { registeredPeople, type HumanFragment, type loadHumanRegistry as LoadFn, type resolveSlackHandle as ResolveFn } from "../human-registry.js";
@@ -26,7 +27,7 @@ export interface RegistrySurface {
 const POLICY_TEXT_LIMIT = 6000;
 
 /** `kind`: the binding kind a sender's platform id is registered under (the Discord connector passes "discord"). */
-export function makeInboundSenderResolver(reg: RegistrySurface, home?: string, kind: "slack" | "discord" = "slack"):(slackUserId: string, channel?: string) => InboundSenderResolution {
+export function makeInboundSenderResolver(reg: RegistrySurface, home?: string, kind: ChatConnectorKind = "slack"): (slackUserId: string, channel?: string) => InboundSenderResolution {
   return (slackUserId, channel) => {
     const loaded = reg.loadHumanRegistry(home);
     const people = registeredPeople(loaded);

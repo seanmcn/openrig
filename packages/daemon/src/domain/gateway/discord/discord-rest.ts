@@ -128,8 +128,4 @@ export class DiscordChannels {
     if (r.status === 200) { this.note(r.json); return this.parent.get(channelId) ?? null; }
     return null;
   }
-
-  isKnownThread(channelId: string): boolean {
-    return Boolean(this.parent.get(channelId));
-  }
 }
