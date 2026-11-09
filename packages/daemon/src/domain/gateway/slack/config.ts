@@ -131,7 +131,11 @@ export function configPathFor(home?: string): string {
 }
 
 export function loadConfig(home?: string): SlackConnectorConfig {
-  const p = configPathFor(home);
+  return loadConfigAt(configPathFor(home));
+}
+
+/** Load a connector config file of this schema (the Discord connector keeps its own file in the same shape). */
+export function loadConfigAt(p: string): SlackConnectorConfig {
   let raw: Partial<SlackConnectorConfig> & { alertTag?: unknown };
   try {
     raw = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<SlackConnectorConfig> & { alertTag?: unknown };
@@ -145,8 +149,11 @@ export function loadConfig(home?: string): SlackConnectorConfig {
 }
 
 export function saveConfig(cfg: SlackConnectorConfig, home?: string): string {
+  return saveConfigAt(cfg, configPathFor(home));
+}
+
+export function saveConfigAt(cfg: SlackConnectorConfig, p: string): string {
   validateConfig(cfg);
-  const p = configPathFor(home);
   fs.mkdirSync(path.dirname(p), { recursive: true });
   // An inherited destination is left out of the file, so the file records only a destination someone chose.
   const { inboundDestination, ...rest } = cfg;
