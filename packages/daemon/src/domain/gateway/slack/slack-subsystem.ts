@@ -21,7 +21,7 @@ import { buildInProcessWire, type GatewayWire, type SubsystemDeliverFn } from ".
 import { DispatchBuffer } from "../dispatch-buffer.js";
 import { downloadPrivateFile, isSlackHost, lookupBotApp, postChatMessage } from "./slack-api.js";
 import { botInboxProblems } from "./bot-inbox.js";
-import { effectiveInboundDestination, inboundDestinationNote, loadConfig } from "./config.js";
+import { effectiveInboundDestination, inboundDestinationNote, loadConfig, type SlackConnectorConfig } from "./config.js";
 import { resolveDefaultReceiver } from "../../default-receiver.js";
 import { resolveSecret } from "./secrets.js";
 import { SeenStore, DeadLetterStore, InboundReceiptStore, slackMicros } from "./state-store.js";
@@ -93,8 +93,28 @@ export interface SlackWireOpts {
   inboundRetryIntervalMs?: number;
   inboundMaxConnects?: number;
   registry?: RegistrySurface;
+  /** Another chat platform behind this wire's Slack Web API and Socket Mode calls (the Discord connector, discord/). */
+  platform?: ChatPlatformOverride;
   /** `typedReply`: a typed thread reply, whose words a decision parked on its person stores as its answer; a click's return never does. */
   resolveHumanReply?: (input: { qitemId: string; actorSession: string; decision: string; messageTs?: string; typedReply?: boolean }) => Promise<"resolved" | "resolved-uncertain" | "already-resolved" | "not-applicable">;
+}
+
+/** A platform that answers this wire's Slack-shaped calls itself. Everything above the transport (delivery rules,
+ *  receipts, thread routing, recovery, settlement) is shared; this names what differs. */
+export interface ChatPlatformOverride {
+  name: "discord";
+  config: SlackConnectorConfig;
+  botToken: string | null;
+  /** The inbound credential (Discord's single bot connection uses the bot token). */
+  appToken: string | null;
+  tokenName: string;
+  /** Answers the `https://slack.com/api/*` calls; other URLs (file downloads) pass through. */
+  fetchImpl: FetchImpl;
+  /** Opens the inbound socket behind the URL `apps.connections.open` returned. */
+  wsFactory: (url: string) => WsLike;
+  /** The human registry binding kind whose handle is this platform's user id. */
+  bindingKind: "discord";
+  inboundFiles?: (mediaDir: string) => InboundFilePort;
 }
 
 interface HumanReplyActionPort {
@@ -302,12 +322,18 @@ function deadLetterBacklogFields(
  *  configuration — that is an honest inert wire, not a boot failure. */
 export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const log = opts.log ?? (() => {});
-  const cfg = loadConfig(opts.home);
+  // Another platform behind the same calls (the Discord connector) brings its own config, tokens and transport.
+  const platform = opts.platform;
+  const platformName = platform?.name ?? "slack";
+  const cfg = platform?.config ?? loadConfig(opts.home);
   const ignored = unsupportedChannelMapFields(cfg);
-  if (ignored.length) log(`slack channel map: IGNORING unsupported field(s) ${ignored.join(", ")} (written by a newer OpenRig?); \`rig slack status\` names them`);
+  if (ignored.length) log(`${platformName} channel map: IGNORING unsupported field(s) ${ignored.join(", ")} (written by a newer OpenRig?); \`rig ${platformName} status\` names them`);
   const envFile = cfg.secretsEnvFile ?? undefined;
-  const bot = resolveSecret(SECRET_BOT, { envFile });
-  const app = resolveSecret(SECRET_APP, { envFile });
+  const bot = platform ? platform.botToken : resolveSecret(SECRET_BOT, { envFile });
+  const app = platform ? platform.appToken : resolveSecret(SECRET_APP, { envFile });
+  const fetchImpl = platform?.fetchImpl ?? opts.fetchImpl;
+  const wsFactory = platform?.wsFactory ?? opts.wsFactory;
+  const bindingKind = platform?.bindingKind ?? "slack";
 
   const outboundReady = cfg.enabled && bot !== null && cfg.channel !== null;
   const inboundReady = cfg.enabled && app !== null;
@@ -351,15 +377,16 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const anyOutboundEnabled = outboundReady || relayConfigured;
 
   if (!outboundReady && !inboundReady && !relayConfigured) {
-    const missing = !cfg.enabled ? "connector disabled (rig slack enable)" : !bot ? "SLACK_BOT_TOKEN unresolved" : "channel unconfigured";
-    log(`slack delivery not configured (${missing}) — wire is inert; dispatches would be refused honestly`);
+    const missing = !cfg.enabled ? `connector disabled (rig ${platformName} enable)` : !bot ? `${platform?.tokenName ?? SECRET_BOT} unresolved` : "channel unconfigured";
+    log(`${platformName} delivery not configured (${missing}) — wire is inert; dispatches would be refused honestly`);
     const inert = buildInProcessWire({
       home: opts.home,
       ops: [],
-      deliver: async () => ({ ok: false, class: "slack-not-configured", detail: missing }),
+      deliver: async () => ({ ok: false, class: `${platformName}-not-configured`, detail: missing }),
+      ...(platform ? { connectorId: `${platformName}-subsystem`, platform: platformName } : {}),
       log,
     });
-    return { ...inert, status: () => ({ platform: "slack", configurationDigest: channelStateDigest(cfg), outboundReady: false, inboundReady: false, inboundRouting, recovery: { state: "unavailable", reason: "inbound-not-configured" }, inbound: { state: "not-configured" }, ...deadLetterBacklogFields(dead, deadActions, deadForwards) }) };
+    return { ...inert, status: () => ({ platform: platformName,configurationDigest: channelStateDigest(cfg), outboundReady: false, inboundReady: false, inboundRouting, recovery: { state: "unavailable", reason: "inbound-not-configured" }, inbound: { state: "not-configured" }, ...deadLetterBacklogFields(dead, deadActions, deadForwards) }) };
   }
 
   const ports = makeQueuePorts(opts.queueRepo, {
@@ -641,7 +668,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         unfurl: cfg.unfurl === "on" ? "on" : "off",
         // P6: each post names the machine it comes from, the daemon's own host id.
         machine: () => getSelfHostId(),
-        fetchImpl: opts.fetchImpl,
+        fetchImpl: fetchImpl,
         stopSignal: runCtl.signal,
         delivered,
         attempted,
@@ -707,7 +734,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
           for (const e of reg.entities) {
             if (e.entityId !== local) continue;
             for (const b of e.connectorBindings) {
-              if (b.kind === "slack" && b.handle) return b.handle;
+              if (b.kind === bindingKind && b.handle) return b.handle;
             }
           }
           return undefined;
@@ -819,7 +846,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     attempted: relayAttempted,
     delivered: relayDelivered,
     outboundSeen,
-    fetchImpl: opts.fetchImpl,
+    fetchImpl: fetchImpl,
     stopSignal: runCtl.signal,
     log,
     resolveProfile: (connectorRef) => {
@@ -1309,6 +1336,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     ops: anyOutboundEnabled ? [OUTBOUND_OP] : [],
     ...(anyOutboundEnabled ? { prepare: prepareDecision } : {}),
     deliver: anyOutboundEnabled ? engineDeliver : deliver,
+    // The capability handshake names the connector actually behind the wire.
+    ...(platform ? { connectorId: `${platformName}-subsystem`, platform: platformName } : {}),
     log,
   });
   selfDispatch = (decisionId, payload) =>
@@ -1319,7 +1348,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   // hermeticity rule, same as every monitor in the supervision tree.
   const stops: Array<() => void> = [];
   const starts: Array<() => void> = [];
-  const settlement = outboundReady ? new SlackAskSettlement({ queue: opts.queueRepo, token: bot!, fetchImpl: opts.fetchImpl, log }) : null;
+  const settlement = outboundReady ? new SlackAskSettlement({ queue: opts.queueRepo, token: bot!, fetchImpl: fetchImpl, log }) : null;
   if (settlement) {
     starts.push(() => settlement.start());
     stops.push(() => settlement.stop());
@@ -1334,7 +1363,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     stateDir: stateDir(opts.home),
     router,
     trackedThreads: (channels, closedSince) => threadMap.trackedForRecovery(channels, closedSince),
-    fetchImpl: opts.fetchImpl,
+    fetchImpl: fetchImpl,
     ...(relayed ? { relayed: true } : {}),
   });
 
@@ -1364,7 +1393,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     releaseRef = (q) => driver.release(q);
     starts.push(() => {
       driver.start();
-      log("slack outbound driver started (subsystem path)");
+      log(`${platformName} outbound driver started (subsystem path)`);
     });
     stops.push(() => driver.stop());
   }
@@ -1389,7 +1418,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       deadLetter: dead,
       destination: inbound.destination,
       reactions: cfg.reactions === "off" ? "off" : "route",
-      resolveSender: makeInboundSenderResolver(registry, opts.home),
+      resolveSender: makeInboundSenderResolver(registry, opts.home, bindingKind),
       // S10 — deterministic thread routing: mapped thread → exactly the mapped seat; unmapped
       // or human-initiated → the configured orchestrator slot as an unrouted-signal row.
       resolveRoute: makeThreadRouteResolver({
@@ -1433,7 +1462,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         acknowledgeAnswer: async ({ channel, threadTs, text }: { channel?: string; threadTs: string; text: string }) => {
           const target = channel ?? cfg.channel;
           if (!target || runCtl.signal.aborted) return false;
-          const r = await postChatMessage(bot, { channel: target, thread_ts: threadTs, text }, opts.fetchImpl, undefined,
+          const r = await postChatMessage(bot, { channel: target, thread_ts: threadTs, text }, fetchImpl, undefined,
             (ms) => abortableSleep(ms, runCtl.signal));
           if (!r.ok) log(`answer acknowledgement not posted thread=${threadTs}: ${r.error}`);
           return r.ok;
@@ -1444,12 +1473,14 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       // arm keeps failure honest. Media lives beside the gateway's other durable
       // state, under the same home convention.
       ...(bot ? {
-        files: makeInboundFilePort({
-          token: bot,
-          mediaDir: path.join(stateDir(opts.home), "slack-inbound-media"),
-          fetchImpl: opts.fetchImpl,
-          log,
-        }),
+        files: platform?.inboundFiles
+          ? platform.inboundFiles(path.join(stateDir(opts.home), `${platformName}-inbound-media`))
+          : makeInboundFilePort({
+            token: bot,
+            mediaDir: path.join(stateDir(opts.home), "slack-inbound-media"),
+            fetchImpl: fetchImpl,
+            log,
+          }),
       } : {}),
       // Named-bot delivery: wired only with a valid botInbox and the bot token bots.info needs.
       ...(cfg.botInbox && bot && botInboxProblems(cfg).length === 0 ? {
@@ -1457,12 +1488,12 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
           channel: cfg.botInbox.channel,
           destination: cfg.botInbox.destination,
           bots: cfg.botInbox.bots,
-          lookupBot: (botId: string) => lookupBotApp(bot, botId, opts.fetchImpl),
+          lookupBot: (botId: string) => lookupBotApp(bot, botId, fetchImpl),
         },
       } : {}),
       forward: {
         hostFor: (channel: string | undefined) => forwarding ? cfg.forwardChannels!.find((f) => f.channel === channel)?.host ?? null : null,
-        send: makeEnvelopeForwarder({ fetchImpl: opts.fetchImpl as typeof fetch | undefined, loadRegistry: opts.loadHostRegistry }),
+        send: makeEnvelopeForwarder({ fetchImpl: fetchImpl as typeof fetch | undefined, loadRegistry: opts.loadHostRegistry }),
       },
       forwardDeadLetter: deadForwards,
       log,
@@ -1504,15 +1535,15 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     starts.push(() => {
       recovery!.initialize(); // persist the once-only floor before any live events
       inboundHandle = startSocketInbound(app!, socketRouter, {
-        fetchImpl: opts.fetchImpl,
-        wsFactory: opts.wsFactory,
+        fetchImpl: fetchImpl,
+        wsFactory: wsFactory,
         retryIntervalMs: opts.inboundRetryIntervalMs,
         inboundMaxConnects: opts.inboundMaxConnects,
         receipts,
         recovery,
         log,
       });
-      log("slack socket-mode inbound started (subsystem path)");
+      log(`${platformName} ${platform ? "gateway" : "socket-mode"} inbound started (subsystem path)`);
     });
     stops.push(() => inboundHandle?.stop());
   }
@@ -1536,7 +1567,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       baseStop();
     },
     status: () => ({
-      platform: "slack", configurationDigest: channelStateDigest(cfg),
+      platform: platformName, configurationDigest: channelStateDigest(cfg),
       outboundReady,
       inboundReady,
       ...(settlement ? { settlement: settlement.status() } : {}),

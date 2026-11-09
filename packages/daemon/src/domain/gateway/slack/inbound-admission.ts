@@ -25,17 +25,19 @@ export interface RegistrySurface {
 /** The longest policy text an inbound row carries; the rest is a command away. */
 const POLICY_TEXT_LIMIT = 6000;
 
-export function makeInboundSenderResolver(reg: RegistrySurface, home?: string): (slackUserId: string, channel?: string) => InboundSenderResolution {
+/** `kind`: the binding kind a sender's platform id is registered under (the Discord connector passes "discord"). */
+export function makeInboundSenderResolver(reg: RegistrySurface, home?: string, kind: "slack" | "discord" = "slack"):(slackUserId: string, channel?: string) => InboundSenderResolution {
   return (slackUserId, channel) => {
     const loaded = reg.loadHumanRegistry(home);
     const people = registeredPeople(loaded);
     if (!people) {
       return { admitted: false, teaching: `human registry unavailable — inbound refused (fail-closed): ${loaded.ok ? "" : loaded.error}` };
     }
-    const shared = channel ? sharedChannelOn(channel, people, home) : null;
+    // Shared channels are registered for Slack only.
+    const shared = channel && kind === "slack" ? sharedChannelOn(channel, people, home) : null;
     // Nobody registered yet isn't a broken registry: a registered shared channel's message still gets in, and anyone
     // else is told to register a person, as before.
-    const r = loaded.ok ? reg.resolveSlackHandle(slackUserId, people) : { kind: "unregistered" as const, error: loaded.error };
+    const r = loaded.ok ? reg.resolveSlackHandle(slackUserId, people, kind) : { kind: "unregistered" as const, error: loaded.error };
     if (r.kind === "registered") {
       return { admitted: true, source: r.address, ...(shared ? { sharedChannel: channelContext(shared, slackUserId, r.address) } : {}) };
     }
