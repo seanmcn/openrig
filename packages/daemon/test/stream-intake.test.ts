@@ -933,7 +933,8 @@ describe("StreamIntakeCoordinator", () => {
     });
     coord1.start();
     const item0 = streamStore.emit({ sourceSession: "test@s", body: "Initial item 0" });
-    await new Promise((r) => setTimeout(r, 50));
+    // Each wait below is for the intake to have done what the next step reads, not a fixed time a loaded host can miss.
+    await vi.waitFor(() => expect(queueRepo.list({ destinationSession: "queue.worker" })).toHaveLength(1), { timeout: 10_000 });
     coord1.stop();
 
     // Close the initial intake queue row so subsequent intake items open fresh rows or notes
@@ -975,7 +976,10 @@ describe("StreamIntakeCoordinator", () => {
     coord2.start();
 
     // Wait for page 1 to process and page 2 to fail
-    await new Promise((r) => setTimeout(r, 50));
+    await vi.waitFor(() => {
+      expect(pageQueries).toBeGreaterThanOrEqual(2);
+      expect(queueRepo.list({ destinationSession: "queue.worker", state: "pending" })).toHaveLength(1);
+    }, { timeout: 10_000 });
 
     // Emit live item while catch-up is incomplete
     const liveItem = streamStore.emit({ sourceSession: "test@s", body: "Live item 3 during failure" });
@@ -1003,7 +1007,9 @@ describe("StreamIntakeCoordinator", () => {
     // 4. Recover: clear failure and trigger recovery through a live emit
     failPage2 = false;
     const recoverItem = streamStore.emit({ sourceSession: "test@s", body: "Live item 4 triggering recovery" });
-    await new Promise((r) => setTimeout(r, 50));
+    await vi.waitFor(() => expect((db.prepare("SELECT last_sort_key FROM stream_intake_cursor WHERE id = 1").get() as {
+      last_sort_key: string;
+    }).last_sort_key).toBe(recoverItem.streamSortKey), { timeout: 10_000 });
 
     // After recovery, item 2, held liveItem, and recoverItem must all have been processed, and cursor advanced to recoverItem
     const cursorAfter = db.prepare("SELECT last_sort_key FROM stream_intake_cursor WHERE id = 1").get() as {
