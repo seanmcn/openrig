@@ -109,6 +109,56 @@ export function costLine(seat: CostPayload["seats"][number]): string {
   return `${seat.seatSession}  cost: unknown (${seat["reason"]})`;
 }
 
+const COST_BY = ["row", "slice", "mission", "repo"] as const;
+
+interface CostTotals {
+  requests: number;
+  costUsd: number;
+  costUnavailableRequests: number;
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
+}
+interface CostByPayload {
+  by: string;
+  groups: Array<CostTotals & { key: string | null }>;
+  unattributed: CostTotals & { reasons: Record<string, number> };
+  seats: Array<CostTotals & { seatSession: string }>;
+  total: CostTotals;
+  note: string;
+}
+
+function totalsText(t: CostTotals, extra = ""): string {
+  const n = `${t.requests} request${t.requests === 1 ? "" : "s"}`;
+  const unpriced = t.costUnavailableRequests ? `, ${t.costUnavailableRequests} without a cost` : "";
+  return `${formatUsd(t.costUsd)} (${n}${unpriced}${extra})`;
+}
+const tokensText = (t: CostTotals["tokens"]): string =>
+  `tokens in ${t.input} / out ${t.output} / cache read ${t.cacheRead} / cache write ${t.cacheWrite}`;
+
+/** One line per group, the unattributed line with its reasons, and the total the lines add up to. */
+export function costByLines(body: CostByPayload): string[] {
+  const lines = [`COST BY ${body.by.toUpperCase()}`];
+  for (const g of body.groups) lines.push(`${g.key ?? `(no ${body.by})`}  ${totalsText(g)}  ${tokensText(g.tokens)}`);
+  const u = body.unattributed;
+  if (u.requests > 0) {
+    const reasons = Object.entries(u.reasons).map(([k, v]) => `${k} ${v}`).join(", ");
+    lines.push(`unattributed  ${totalsText(u, reasons ? `; ${reasons}` : "")}  ${tokensText(u.tokens)}`);
+  }
+  lines.push(`total  ${totalsText(body.total)} across ${body.seats.length} seat${body.seats.length === 1 ? "" : "s"}`);
+  lines.push(body.note);
+  return lines;
+}
+
+function requestLine(r: Record<string, unknown>): string {
+  const cost = (r["cost"] ?? {}) as { usd?: number | null; provenance?: string };
+  const t = (r["tokens"] ?? {}) as { input?: number; output?: number };
+  const a = (r["attribution"] ?? {}) as { status?: string; basis?: string; qitemId?: string | null; slice?: string | null; repo?: string | null };
+  const price = cost.usd === null || cost.usd === undefined ? "cost unavailable" : `${formatUsd(cost.usd)} ${cost.provenance}`;
+  const where = a.status === "attributed"
+    ? `${a.qitemId}${a.slice ? ` slice ${a.slice}` : ""}${a.repo ? ` repo ${a.repo}` : ""} (${a.basis})`
+    : `unattributed (${a.basis})`;
+  return `${r["requestTs"]}  ${r["seatSession"]}  ${r["runtime"]} ${r["model"] ?? "?"}  ${price}  in ${t.input ?? "?"} / out ${t.output ?? "?"}  → ${where}`;
+}
+
 export function usageCommand(depsOverride?: StatusDeps): Command {
   const cmd = new Command("usage").description(
     "Per-seat token telemetry over time (series + top-N burn) — facts for the oversight detector",
@@ -197,11 +247,40 @@ With usage.pi_openrouter_charge on as well (default off), OpenRouter's actual ch
 is shown beside the estimate (never added to it), when the seat's OpenRouter key is the one OpenRig
 forwarded; requests it can't charge are counted with the reason. Changes to either Pi switch take
 effect when the seat next launches or resumes; a running seat keeps its launch selection. Outcomes
-recorded while the switches were on stay visible.`)
-    .action(async (opts: { seat?: string; json?: boolean }) => {
+recorded while the switches were on stay visible.
+
+With --by row|slice|mission|repo, cost and tokens come from the per-request records instead
+(rig usage requests): each Claude, Codex or Pi request attributed to the queue row the seat held
+when it was made, its slice and mission tags, and the workspace repo its paths were in. Requests
+the rule couldn't attribute are one unattributed line, with the reasons; the groups and that line
+add up to the seats' totals. A request without a cost (every Codex request) is counted, not priced.`)
+    .option("--by <grouping>", `group per-request cost by ${COST_BY.join(", ")}`)
+    .option("--since <iso>", "with --by: lower bound on the request time (inclusive)")
+    .option("--until <iso>", "with --by: upper bound on the request time (exclusive)")
+    .action(async (opts: { seat?: string; json?: boolean; by?: string; since?: string; until?: string }) => {
+      if (opts.by !== undefined && !(COST_BY as readonly string[]).includes(opts.by)) {
+        console.error(`invalid --by "${opts.by}" — group by one of ${COST_BY.join(", ")}`);
+        process.exitCode = 1;
+        return;
+      }
+      if (opts.by === undefined && (opts.since || opts.until)) {
+        console.error("--since and --until bound the per-request records: use them with --by");
+        process.exitCode = 1;
+        return;
+      }
       const deps = getDeps();
       const client = await getClient(deps);
       if (!client) return;
+      if (opts.by !== undefined) {
+        const params = new URLSearchParams({ by: opts.by });
+        if (opts.since) params.set("since", opts.since);
+        if (opts.until) params.set("until", opts.until);
+        const res = await client.get<CostByPayload>(`/api/telemetry/usage/cost?${params.toString()}`);
+        if (handleHttpError(res, "usage cost", opts.json)) return;
+        if (opts.json) console.log(JSON.stringify(res.data, null, 2));
+        else for (const line of costByLines(res.data)) console.log(line);
+        return;
+      }
       const params = new URLSearchParams();
       if (opts.seat) params.set("seat", opts.seat);
       const res = await client.get<CostPayload>(`/api/telemetry/usage/cost${params.size ? `?${params.toString()}` : ""}`);
@@ -217,6 +296,48 @@ recorded while the switches were on stay visible.`)
       }
       for (const seat of body.seats) console.log(costLine(seat));
       console.log(body.note);
+    });
+
+  cmd
+    .command("requests")
+    .description("per-request usage records with their attribution (row, slice, mission, repo), oldest first")
+    .option("--seat <session>", "one seat session")
+    .option("--since <iso>", "lower bound on the request time (inclusive)")
+    .option("--until <iso>", "upper bound on the request time (exclusive)")
+    .option("--json", "machine-readable: every record in the range, all pages, as { rows }")
+    .addHelpText("after", `
+Reads every page the daemon serves, so --json holds all the records in the range: copy them out
+before retention.usage_samples_days deletes them. Each record keeps its inputs (seat, native session,
+time, model, tokens by kind, the paths its tool calls touched) beside its attribution and cost
+provenance (runtime_estimate, provider_charge or unavailable).`)
+    .action(async (opts: { seat?: string; since?: string; until?: string; json?: boolean }) => {
+      const deps = getDeps();
+      const client = await getClient(deps);
+      if (!client) return;
+      const rows: Array<Record<string, unknown>> = [];
+      let after: number | null = null;
+      do {
+        const params = new URLSearchParams();
+        if (opts.seat) params.set("seat", opts.seat);
+        if (opts.since) params.set("since", opts.since);
+        if (opts.until) params.set("until", opts.until);
+        if (after !== null) params.set("after", String(after));
+        const qs = params.toString();
+        const res = await client.get<{ rows: Array<Record<string, unknown>>; nextAfter: number | null }>(
+          `/api/telemetry/usage/requests${qs ? `?${qs}` : ""}`);
+        if (handleHttpError(res, "usage requests", opts.json)) return;
+        rows.push(...res.data.rows);
+        after = res.data.nextAfter;
+      } while (after !== null);
+      if (opts.json) {
+        console.log(JSON.stringify({ rows }, null, 2));
+        return;
+      }
+      if (rows.length === 0) {
+        console.log("no per-request records match");
+        return;
+      }
+      for (const r of rows) console.log(requestLine(r));
     });
 
   cmd

@@ -5,6 +5,7 @@
 import type { Database } from "better-sqlite3";
 import type { PiUsageFact, PiUsageFactKind, PiUsageOrigin } from "./pi-usage-facts.js";
 import { OPENROUTER_TEXT_LIMIT, type PiProviderCharge } from "./openrouter-charge.js";
+import { hasUsageRequestsTable, UsageRequestStore } from "./usage-request-store.js";
 
 const KINDS: ReadonlySet<PiUsageFactKind> = new Set(["assistant", "usage", "tool_result", "compaction", "branch_summary"]);
 const ORIGINS: ReadonlySet<PiUsageOrigin> = new Set(["own", "inherited", "unknown"]);
@@ -83,8 +84,11 @@ export function validPiUsageFact(raw: unknown): PiUsageFact | null {
 
 export class PiUsageEntriesStore {
   private readonly chargeColumns: boolean;
+  /** seanmcn/openrig#16: the seat's own entries are also per-request usage records, beside Claude's and Codex's. */
+  private readonly requests: UsageRequestStore | null;
   constructor(private readonly db: Database) {
     this.chargeColumns = hasPiUsageChargesTable(db);
+    this.requests = hasUsageRequestsTable(db) ? new UsageRequestStore(db) : null;
   }
 
   /** Of these entries, the ones that already have a recorded OpenRouter charge (a restarted runner skips them). */
@@ -131,6 +135,7 @@ export class PiUsageEntriesStore {
         stored += upsert.run(input.piSessionId, c.entryId, c.generationId, c.status, c.totalCostUsd, c.upstreamInferenceCostUsd,
           c.cacheDiscountUsd, c.isByok === null ? null : c.isByok ? 1 : 0, c.providerName, c.model, c.apiType, c.workspaceId,
           c.generationCreatedAt, c.credentialSource, c.reason, input.seatSession, recordedAt).changes;
+        if (c.status === "charged" && c.totalCostUsd !== null) this.requests?.applyProviderCharge("pi", input.piSessionId, c.entryId, c.totalCostUsd);
       }
     })();
     return { stored, unchanged: input.charges.length - stored - refused, refused, acknowledged };
@@ -178,6 +183,19 @@ export class PiUsageEntriesStore {
             fact.kind, fact.usageCategory, fact.provider, fact.model, fact.input, fact.output, fact.cacheRead, fact.cacheWrite,
             fact.costTotal, fact.stopReason, api, responseId, api, responseId);
         }
+      }
+      // Only the occupant's own spend: a fork's inherited entries and unknown origins stay out until they settle to own.
+      const own = input.facts.filter((fact) => fact.origin === "own");
+      if (this.requests && own.length > 0) {
+        this.requests.record(own.map((fact) => ({
+          runtime: "pi" as const, seatSession: input.seatSession, nodeId: input.nodeId, nativeSessionId: input.piSessionId,
+          requestKey: fact.entryId, requestTs: fact.entryTimestamp, model: fact.model,
+          tokens: { input: fact.input, output: fact.output, cacheRead: fact.cacheRead, cacheWrite: fact.cacheWrite, reasoning: 0 },
+          cost: fact.costTotal === null
+            ? { usd: null, provenance: "unavailable" as const }
+            : { usd: fact.costTotal, provenance: "runtime_estimate" as const },
+          paths: [],
+        })), recordedAt);
       }
     })();
     return { stored, duplicates: input.facts.length - stored };

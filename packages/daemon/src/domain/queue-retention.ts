@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { TERMINAL_QUEUE_STATES } from "./queue-repository.js";
 import { eraseQueue } from "./queue-erasure.js";
+import { hasUsageRequestsTable } from "./usage-request-store.js";
 
 /**
  * OPR.0.4.6 FS-1 (daemon read-path hardening) — W2 retention/prune runner.
@@ -340,7 +341,17 @@ export function pruneUsageSamples(
         )`,
     )
     .run(cutoff, batchSize);
-  return { deletedRows: result.changes };
+  // seanmcn/openrig#16: per-request usage records follow the same window, by the request's own time. Their read
+  // cursors stay, so a transcript already read is never read (and recorded) again.
+  const requests = hasUsageRequestsTable(db)
+    ? db.prepare(
+      `DELETE FROM usage_requests
+        WHERE id IN (
+          SELECT id FROM usage_requests WHERE request_ts < ? LIMIT ?
+        )`,
+    ).run(cutoff, batchSize).changes
+    : 0;
+  return { deletedRows: result.changes + requests };
 }
 
 /**
