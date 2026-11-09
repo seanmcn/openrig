@@ -3,13 +3,28 @@ import os from "node:os";
 import path from "node:path";
 import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
 
 const run = promisify(exec);
 const runFile = promisify(execFile);
+
+// Each fixture's private tmux server and folder, ended after every test. A `finally` inside the test doesn't run when
+// vitest times the test out, and the worker can then remove its temp folder first, leaving the server running with
+// its socket gone; afterEach runs after a timeout too.
+const fixtures: Array<{ socket: string; home: string; env: NodeJS.ProcessEnv }> = [];
+afterEach(async () => {
+  for (const { socket, home, env } of fixtures.splice(0)) {
+    await runFile("tmux", ["-S", socket, "kill-server"], { env }).catch(() => {});
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+// A slow host's cold start of the pane's bash and the node fixture can take seconds; each wait has room for it, and
+// each test's bound for both of its waits.
+const POLL_MS = 10_000;
+const TEST_MS = 30_000;
 
 // Controlled provider-shaped output, not an authenticated Codex invocation.
 // The actual terminal process receives the real production resume command.
@@ -31,66 +46,62 @@ async function finalObservation(output: string) {
   const env = { ...process.env, HOME: home, TERM: "xterm-256color", HISTFILE: "/dev/null" };
   delete env.TMUX;
   delete env.TMUX_TMPDIR;
+  fixtures.push({ socket, home, env });
   const tmux = async (args: string[]) => (await runFile("tmux", ["-S", socket, ...args], { env })).stdout;
-  try {
-    await tmux(["-f", "/dev/null", "new-session", "-d", "-s", "fixture", "-x", "160", "-y", "40", "/bin/bash --noprofile --norc -i"]);
-    const adapter = new TmuxAdapter(async cmd => {
-      expect(cmd).toMatch(/^tmux /);
-      return (await run(`tmux -S ${shellQuote(socket)} ${cmd.slice(5)}`, { env })).stdout;
-    });
-    const nativeCapture = adapter.capturePaneContent.bind(adapter);
-    const sleep = vi.fn(async () => {});
-    let captures = 0;
-    const capture = vi.spyOn(adapter, "capturePaneContent").mockImplementation(async (target, lines) => {
-      captures++;
-      if (captures === 1) {
-        await expect.poll(() => nativeCapture(target, lines), { timeout: 5000 }).toContain("fixture waiting for final observation");
-      }
-      if (captures === 3) {
-        // Two loop observations exercise a retry before the final read.
-        expect(sleep).toHaveBeenCalledExactlyOnceWith(200);
-        // Release output only at that final boundary, avoiding timer races.
-        fs.writeFileSync(gate, output);
-        await expect.poll(() => nativeCapture(target, lines), { timeout: 5000 }).toContain(output);
-      }
-      return nativeCapture(target, lines);
-    });
-    const resume = new CodexResumeAdapter(adapter, {
-      launchPath: `${bin}:/usr/bin:/bin`, codexHome: path.join(home, "private-codex"),
-      // Default-budget arithmetic is covered in codex-resume-final-budget.test.ts.
-      // Keep real terminal/process observations here, including the final read.
-      pollMs: 200, maxWaitMs: 200, sleep,
-    });
-    const result = await resume.resume("fixture", "codex_id", "fixture-id", home);
-    expect(capture).toHaveBeenCalledTimes(3);
-    expect(sleep).toHaveBeenCalledExactlyOnceWith(200);
-    return result;
-  } finally {
-    await tmux(["kill-server"]).catch(() => {});
-    fs.rmSync(home, { recursive: true, force: true });
-  }
+  await tmux(["-f", "/dev/null", "new-session", "-d", "-s", "fixture", "-x", "160", "-y", "40", "/bin/bash --noprofile --norc -i"]);
+  const adapter = new TmuxAdapter(async cmd => {
+    expect(cmd).toMatch(/^tmux /);
+    return (await run(`tmux -S ${shellQuote(socket)} ${cmd.slice(5)}`, { env })).stdout;
+  });
+  const nativeCapture = adapter.capturePaneContent.bind(adapter);
+  const sleep = vi.fn(async () => {});
+  let captures = 0;
+  const capture = vi.spyOn(adapter, "capturePaneContent").mockImplementation(async (target, lines) => {
+    captures++;
+    if (captures === 1) {
+      await expect.poll(() => nativeCapture(target, lines), { timeout: POLL_MS }).toContain("fixture waiting for final observation");
+    }
+    if (captures === 3) {
+      // Two loop observations exercise a retry before the final read.
+      expect(sleep).toHaveBeenCalledExactlyOnceWith(200);
+      // Release output only at that final boundary, avoiding timer races.
+      fs.writeFileSync(gate, output);
+      await expect.poll(() => nativeCapture(target, lines), { timeout: POLL_MS }).toContain(output);
+    }
+    return nativeCapture(target, lines);
+  });
+  const resume = new CodexResumeAdapter(adapter, {
+    launchPath: `${bin}:/usr/bin:/bin`, codexHome: path.join(home, "private-codex"),
+    // Default-budget arithmetic is covered in codex-resume-final-budget.test.ts.
+    // Keep real terminal/process observations here, including the final read.
+    pollMs: 200, maxWaitMs: 200, sleep,
+  });
+  const result = await resume.resume("fixture", "codex_id", "fixture-id", home);
+  expect(capture).toHaveBeenCalledTimes(3);
+  expect(sleep).toHaveBeenCalledExactlyOnceWith(200);
+  return result;
 }
 
 describe.skipIf(process.platform === "win32")("native terminal final Codex resume observation", () => {
   it("retains a late access-token refusal as recoverable attention with evidence", async () => {
     const output = "Your access token could not be refreshed. Please sign in again.";
     expect(await finalObservation(output)).toMatchObject({ ok: false, code: "attention_required", evidence: expect.stringContaining(output) });
-  }, 15_000);
+  }, TEST_MS);
 
   it("retains a late incompatible-client notice as recoverable attention", async () => {
     const output = "This model requires a newer version of Codex.";
     expect(await finalObservation(output)).toMatchObject({ ok: false, code: "attention_required", evidence: expect.stringContaining(output) });
-  }, 15_000);
+  }, TEST_MS);
 
   it("retains a late missing saved session as a fresh-retry outcome", async () => {
     expect(await finalObservation("Error: No saved session found for that token.")).toMatchObject({
       ok: false, code: "retry_fresh", message: "Codex resume failed: no saved session found for the requested token",
     });
-  }, 15_000);
+  }, TEST_MS);
 
   it("still accepts a ready interactive prompt arriving at the final read", async () => {
     expect(await finalObservation("OpenAI Codex (v0.0.0)\n› Ask Codex to do anything")).toMatchObject({ ok: true });
-  }, 15_000);
+  }, TEST_MS);
 
   it("keeps the launch for attention while the staging wrapper holds the foreground, never claiming readiness", async () => {
     // The production launch stages this fixture via /bin/sh, so native tmux labels the pane with that wrapper while
@@ -99,5 +110,5 @@ describe.skipIf(process.platform === "win32")("native terminal final Codex resum
       ok: false, code: "attention_required",
       message: "Codex resume could not be verified; launch retained: the pane shows a shell that isn't a proven idle shell, so a launch script may still be starting Codex.",
     });
-  }, 15_000);
+  }, TEST_MS);
 });
