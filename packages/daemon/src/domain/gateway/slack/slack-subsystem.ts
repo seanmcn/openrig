@@ -386,7 +386,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       ...(platform ? { connectorId: `${platformName}-subsystem`, platform: platformName } : {}),
       log,
     });
-    return { ...inert, status: () => ({ platform: platformName,configurationDigest: channelStateDigest(cfg), outboundReady: false, inboundReady: false, inboundRouting, recovery: { state: "unavailable", reason: "inbound-not-configured" }, inbound: { state: "not-configured" }, ...deadLetterBacklogFields(dead, deadActions, deadForwards) }) };
+    return { ...inert, status: () => ({ platform: platformName, configurationDigest: channelStateDigest(cfg), outboundReady: false, inboundReady: false, inboundRouting, recovery: { state: "unavailable", reason: "inbound-not-configured" }, inbound: { state: "not-configured" }, ...deadLetterBacklogFields(dead, deadActions, deadForwards) }) };
   }
 
   const ports = makeQueuePorts(opts.queueRepo, {
@@ -668,7 +668,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         unfurl: cfg.unfurl === "on" ? "on" : "off",
         // P6: each post names the machine it comes from, the daemon's own host id.
         machine: () => getSelfHostId(),
-        fetchImpl: fetchImpl,
+        fetchImpl,
         stopSignal: runCtl.signal,
         delivered,
         attempted,
@@ -846,7 +846,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     attempted: relayAttempted,
     delivered: relayDelivered,
     outboundSeen,
-    fetchImpl: fetchImpl,
+    fetchImpl,
     stopSignal: runCtl.signal,
     log,
     resolveProfile: (connectorRef) => {
@@ -1348,7 +1348,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   // hermeticity rule, same as every monitor in the supervision tree.
   const stops: Array<() => void> = [];
   const starts: Array<() => void> = [];
-  const settlement = outboundReady ? new SlackAskSettlement({ queue: opts.queueRepo, token: bot!, fetchImpl: fetchImpl, log }) : null;
+  const settlement = outboundReady ? new SlackAskSettlement({ queue: opts.queueRepo, token: bot!, fetchImpl, log }) : null;
   if (settlement) {
     starts.push(() => settlement.start());
     stops.push(() => settlement.stop());
@@ -1363,7 +1363,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     stateDir: stateDir(opts.home),
     router,
     trackedThreads: (channels, closedSince) => threadMap.trackedForRecovery(channels, closedSince),
-    fetchImpl: fetchImpl,
+    fetchImpl,
     ...(relayed ? { relayed: true } : {}),
   });
 
@@ -1478,7 +1478,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
           : makeInboundFilePort({
             token: bot,
             mediaDir: path.join(stateDir(opts.home), "slack-inbound-media"),
-            fetchImpl: fetchImpl,
+            fetchImpl,
             log,
           }),
       } : {}),
@@ -1535,7 +1535,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     starts.push(() => {
       recovery!.initialize(); // persist the once-only floor before any live events
       inboundHandle = startSocketInbound(app!, socketRouter, {
-        fetchImpl: fetchImpl,
+        fetchImpl,
         wsFactory: wsFactory,
         retryIntervalMs: opts.inboundRetryIntervalMs,
         inboundMaxConnects: opts.inboundMaxConnects,

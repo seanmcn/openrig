@@ -76,6 +76,19 @@ describe("rendering a Slack post for Discord", () => {
     expect(r.messages[0]!.content).toContain(label);
   });
 
+  it("a long ask keeps its questions and buttons on the root, its text in an embed and the mention in the content", () => {
+    const long = (id: string) => ({ id, question: `${id}: ${"why ".repeat(120)}`.slice(0, 500), options: [{ id: "a", label: "A", recommended: true }, { id: "b", label: "B" }] });
+    const r = renderSlackPost(ask({ humanQuestions: ["q1", "q2", "q3", "q4"].map(long) }));
+    const root = r.messages[0]!;
+    expect(buttons(root)).toHaveLength(4);
+    expect(root.content).toContain("<@123456789012345678>");
+    expect(root.content).toContain(reconcileToken("dec-1"));
+    expect(root.content.length).toBeLessThanOrEqual(2000);
+    expect(root.embeds![0]!.description).toContain("q4: why");
+    expect(r.messages.slice(1).every((m) => !m.components?.length)).toBe(true);
+    expect(r.messages.slice(1).map((m) => m.content).join("\n")).toContain("The build is green.");
+  });
+
   it("plain text (a click acknowledgement) converts Slack mrkdwn", () => {
     const r = renderSlackPost({ text: "Your answer is *recorded*: <https://x.example|details> &amp; more" });
     expect(r.messages[0]!.content).toBe("Your answer is **recorded**: [details](https://x.example) & more");
