@@ -47,6 +47,10 @@
       "types": "./dist/gateway-slack-surface.d.ts",
       "import": "./dist/gateway-slack-surface.js"
     },
+    "./gateway-discord": {
+      "types": "./dist/gateway-discord-surface.d.ts",
+      "import": "./dist/gateway-discord-surface.js"
+    },
     "./context-pack-taxonomy": {
       "types": "./dist/context-pack-taxonomy-surface.d.ts",
       "import": "./dist/context-pack-taxonomy-surface.js"

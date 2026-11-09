@@ -50,6 +50,7 @@ export const COMMAND_LOADERS: ReadonlyMap<string, Load> = new Map<string, Load>(
   ["stream", async () => (await import("./commands/stream.js")).streamCommand()],
   ["queue", async () => (await import("./commands/queue.js")).queueCommand()],
   ["slack", async () => (await import("./commands/slack.js")).slackCommand()],
+  ["discord", async () => (await import("./commands/discord.js")).discordCommand()],
   ["project", async () => (await import("./commands/project.js")).projectCommand()],
   ["view", async () => (await import("./commands/view.js")).viewCommand()],
   ["terminal", async () => (await import("./commands/terminal.js")).terminalCommand()],
