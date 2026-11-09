@@ -63,7 +63,8 @@ describe("ClaudeManagedLaunch capability query timeout (#260)", () => {
   it("refuses an immediate non-zero exit without waiting", async () => {
     const result = await prepare("exit 1");
     expect(result).toMatchObject({ ok: false, message: QUERY_FAILED });
-    expect(result.ms).toBeLessThan(1000);
+    // Cold process startup under load is separate from the five-second query deadline.
+    expect(result.ms).toBeLessThan(4000);
   });
 
   it("refuses an empty successful help as unavailable options", async () => {

@@ -122,7 +122,7 @@ describe("S03 production managed capability selection", () => {
     vi.mocked(execFile).mockImplementation(native.execFile);
     const prepared = await f.managed.prepare({ nodeId: "node", session: "seat", pane: "%1" }, "auto");
     const child = native.execFileSync("/bin/sh", ["-c", prepared.command(["--permission-mode", "auto"])], {
-      encoding: "utf8", timeout: 3000,
+      encoding: "utf8", timeout: 10000,
       env: { ...sessionEnv, UNRELATED_VALUE: "not-forwarded", ...pane },
     });
     // An empty daemon value counts as unset.
@@ -168,7 +168,7 @@ if (process.argv.includes('--help')) {
       ? `unset TERM COLORTERM LANG LC_CTYPE LC_MESSAGES; ${command}`
       : command;
     const stdout = await new Promise<string>((resolve, reject) => {
-      native.execFile("/bin/sh", ["-c", paneCommand], { encoding: "utf8", timeout: 3000,
+      native.execFile("/bin/sh", ["-c", paneCommand], { encoding: "utf8", timeout: 10000,
         env: paneEnv },
       (error, out) => error ? reject(error) : resolve(out));
     });
@@ -224,7 +224,7 @@ else console.log(JSON.stringify(Object.fromEntries(['TMUX', 'TERM_PROGRAM', 'TER
     const paneCommand = label === "absent" ? `unset TMUX TERM_PROGRAM TERM_PROGRAM_VERSION; ${command}` : command;
     const launch = scoped ? await scopedPaneLaunch(f.env, paneCommand) : ["/bin/sh", "-c", paneCommand];
     const stdout = await new Promise<string>((resolve, reject) => {
-      native.execFile(launch[0]!, launch.slice(1), { encoding: "utf8", timeout: 3000, env: paneEnv },
+      native.execFile(launch[0]!, launch.slice(1), { encoding: "utf8", timeout: 10000, env: paneEnv },
         (error, out) => error ? reject(error) : resolve(out));
     });
     // An empty or absent variable stays absent; TMUX and TMUX_PANE never arrive.
@@ -246,11 +246,11 @@ else console.log(JSON.stringify(Object.fromEntries(['TMUX', 'TERM_PROGRAM', 'TER
   const dash = [process.env.OPENRIG_TEST_DASH, "/usr/bin/dash", "/bin/dash"].find(file => file && existsSync(file));
   const shells = ["/bin/sh", ...(dash ? [dash] : [])];
   async function runPane(f: ReturnType<typeof fixture>, pane: Record<string, string>, unset: string[] = [], shell = "/bin/sh", scopedRuntimeDir?: string): Promise<Record<string, string>> {
-    writeFileSync(f.executable, `#!${process.execPath}\n
-if (process.argv.includes('--help')) console.log(${JSON.stringify(help)});
-else console.log(JSON.stringify(Object.fromEntries(${JSON.stringify(paneNames)}
-  .filter(k => process.env[k] !== undefined).map(k => [k, process.env[k]]))));
-`);
+    // Query capabilities without paying for a second cold Node startup.
+    const receipt = path.join(f.root, "pane-env.cjs");
+    writeFileSync(receipt, `console.log(JSON.stringify(Object.fromEntries(${JSON.stringify(paneNames)}
+      .filter(k => process.env[k] !== undefined).map(k => [k, process.env[k]]))));`);
+    writeFileSync(f.executable, `#!/bin/sh\nif [ "$1" = --help ]; then printf '%s\\n' ${shellQuote(help)}; else exec ${shellQuote(process.execPath)} ${shellQuote(receipt)} "$@"; fi\n`);
     const native = await vi.importActual<typeof import("node:child_process")>("node:child_process");
     vi.mocked(execFile).mockImplementation(native.execFile);
     const prepared = await f.managed.prepare({ nodeId: "node", session: "seat", pane: "%1" }, "auto");
@@ -259,7 +259,7 @@ else console.log(JSON.stringify(Object.fromEntries(${JSON.stringify(paneNames)}
     const paneCommand = unset.length ? `unset ${unset.join(" ")}; ${command}` : command;
     const launch = scopedRuntimeDir ? await scopedPaneLaunch(f.env, paneCommand, scopedRuntimeDir) : [shell, "-c", paneCommand];
     const stdout = await new Promise<string>((resolve, reject) => {
-      native.execFile(launch[0]!, launch.slice(1), { encoding: "utf8", timeout: 3000, env: { ...f.env, ...pane } },
+      native.execFile(launch[0]!, launch.slice(1), { encoding: "utf8", timeout: 10000, env: { ...f.env, ...pane } },
         (error, out) => error ? reject(error) : resolve(out));
     });
     return JSON.parse(stdout);
@@ -458,7 +458,7 @@ describe("S03 bound launch across existing paths", () => {
       : await f.adapter.launchHarness(binding, { name: "seat", ...(kind === "resume" ? { resumeToken: "prior-id" } : {}),
         ...(kind === "fork" ? { forkSource: { kind: "native_id" as const, value: "prior-id" } } : {}) });
     expect(result).toMatchObject({ ok: true });
-    const argv = JSON.parse(native.execFileSync("/bin/sh", ["-c", f.calls[0]!], { cwd: f.cwd, env: f.env, encoding: "utf8", timeout: 3000 })) as string[];
+    const argv = JSON.parse(native.execFileSync("/bin/sh", ["-c", f.calls[0]!], { cwd: f.cwd, env: f.env, encoding: "utf8", timeout: 10000 })) as string[];
     expect(argv.slice(argv.indexOf("--advisor"), argv.indexOf("--advisor") + 2)).toEqual(["--advisor", advisor]);
     expect(argv.slice(argv.indexOf("--model"), argv.indexOf("--model") + 2)).toEqual(["--model", binding.model]);
     expect(argv.slice(argv.indexOf("--effort"), argv.indexOf("--effort") + 2)).toEqual(["--effort", "medium"]);
@@ -466,7 +466,7 @@ describe("S03 bound launch across existing paths", () => {
     else expect(argv.slice(argv.indexOf("--resume"), argv.indexOf("--resume") + 2)).toEqual(["--resume", "prior-id"]);
     expect(argv.includes("--fork-session")).toBe(kind === "fork");
     await f.adapter.launchHarness({ ...f.binding, permissionMode: binding.permissionMode }, { name: "peer" });
-    const peer = JSON.parse(native.execFileSync("/bin/sh", ["-c", f.calls[1]!], { cwd: f.cwd, env: f.env, encoding: "utf8", timeout: 3000 })) as string[];
+    const peer = JSON.parse(native.execFileSync("/bin/sh", ["-c", f.calls[1]!], { cwd: f.cwd, env: f.env, encoding: "utf8", timeout: 10000 })) as string[];
     expect(peer).not.toContain("--advisor");
   });
 

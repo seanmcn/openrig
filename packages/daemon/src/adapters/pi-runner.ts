@@ -66,6 +66,42 @@ export function preparePiAccount(agentDir: string, accountHome: string | undefin
   }
 }
 
+/** Preserve depot operator extensions and per-seat MCP configuration independently of account selection. */
+export function preparePiResources(agentDir: string, defaults: string): void {
+  fs.mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+  const extensions = nodePath.join(defaults, "extensions");
+  if (nodePath.resolve(agentDir) !== nodePath.resolve(defaults) && fs.existsSync(extensions)) {
+    const settingsPath = nodePath.join(agentDir, "settings.json");
+    let settings: Record<string, unknown>;
+    try { settings = fs.existsSync(settingsPath) ? JSON.parse(fs.readFileSync(settingsPath, "utf8")) : {}; }
+    catch { throw new Error("Pi settings could not be read."); }
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)
+      || (settings.extensions !== undefined && (!Array.isArray(settings.extensions)
+        || !settings.extensions.every(entry => typeof entry === "string")))) {
+      throw new Error("Pi settings need an object with an extensions list.");
+    }
+    const configured = (settings.extensions ?? []) as string[];
+    if (!configured.includes(extensions)) {
+      settings.extensions = [...configured, extensions];
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
+    }
+  }
+  const config = nodePath.join(agentDir, "mcp.json");
+  const template = nodePath.join(defaults, "mcp.json");
+  const source = fs.existsSync(template) ? template : config;
+  if (!fs.existsSync(source)) return;
+  // Config can contain credentials: never include a parser's error (or input) in diagnostics.
+  let data: { mcpServers?: Record<string, Record<string, unknown>> };
+  try { data = JSON.parse(fs.readFileSync(source, "utf8")); }
+  catch { throw new Error("Pi MCP configuration could not be read."); }
+  if (!data || typeof data !== "object" || !data.mcpServers || typeof data.mcpServers !== "object") {
+    throw new Error("Pi MCP configuration needs an mcpServers object.");
+  }
+  const servers = Object.fromEntries(Object.entries(data.mcpServers).map(([name, server]) => [name, { ...server, exposure: "direct" }]));
+  fs.writeFileSync(config, JSON.stringify({ ...data, mcpServers: servers }, null, 2) + "\n", { mode: 0o600 });
+  fs.chmodSync(config, 0o600);
+}
+
 // ── Submitted input boundaries ─────────────────────────────────────────────
 // Canonical TTY buffers can overflow before Node sees even the paste terminator.
 // Use Node's line editor in raw mode, with only paste framing handled here.
@@ -439,7 +475,7 @@ export class RunnerCore {
   private started = false;
   /** OMP failures/approvals survive the turn until agent_start, except typed
    *  transient assistant failures, released only when agent_end completes. */
-  private attention: "runtime_error" | "permission_prompt" | "transient_turn_error" | null = null;
+  private attention: "runtime_error" | "permission_prompt" | "transient_turn_error" | "usage_limit" | null = null;
   /** Whether the last activity posted is that attention. Later activity in
    *  the same turn (a tool call after a denied approval) replaces it. */
   private attentionIsLatest = false;
@@ -759,15 +795,16 @@ export class RunnerCore {
     }, () => { /* best-effort: resent on the next refresh */ });
   }
 
-  private raiseAttention(subtype: "runtime_error" | "permission_prompt" | "transient_turn_error"): void {
+  private raiseAttention(subtype: "runtime_error" | "permission_prompt" | "transient_turn_error" | "usage_limit"): void {
     // Persistent failures and denied approvals outrank transient failures.
     // Only emit when attention changes or intervening activity replaced it.
-    const next = this.attention === "runtime_error" ? this.attention
+    const next = this.attention === "usage_limit" ? this.attention
+      : this.attention === "runtime_error" && subtype !== "usage_limit" ? this.attention
       : this.attention === "permission_prompt" && subtype === "transient_turn_error" ? this.attention : subtype;
     if (this.attention === next && this.attentionIsLatest) return;
     this.attention = next;
     this.attentionIsLatest = true;
-    this.io.postActivity(this.activityPayload("Notification", next === "transient_turn_error" ? "runtime_error" : next));
+    this.io.postActivity(this.activityPayload(next === "usage_limit" ? "at_limit" : "Notification", next === "transient_turn_error" ? "runtime_error" : next));
   }
 
   /** Idle and streaming heartbeat. A Pi runner only reports at turn and tool boundaries, and the
@@ -898,6 +935,12 @@ export class RunnerCore {
       // guard at agent_end. Unknown/auth/configuration failures stay attention;
       // diagnostic prose is never used to decide whether a retry is safe.
       const status = message?.errorStatus;
+      // Pi preserves provider failures as errorMessage even when it omits the HTTP status.
+      const detail = typeof message?.errorMessage === "string" ? message.errorMessage
+        : event.type === "auto_retry_end" && event.success === false && typeof event.finalError === "string" ? event.finalError : "";
+      const allowance = status === 402 || /insufficient_quota|(?:quota|allowance|usage limit|credit balance).{0,80}(?:exceed|exhaust|deplet|low)|(?:exceed|exhaust).{0,40}(?:quota|allowance)/i.test(detail)
+        || (event.type === "auto_retry_end" && event.success === false && /"code"\s*:\s*"?1300"?/.test(detail));
+      if (this.runtime === "pi" && allowance) this.raiseAttention("usage_limit");
       const transient = (event.type === "message_end" || event.type === "turn_end")
         && message?.role === "assistant" && message.stopReason === "error"
         && typeof status === "number" && [408, 429, 500, 502, 503, 504, 529].includes(status);
@@ -1262,6 +1305,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const paths = piSeatPaths(args.stateRoot, args.sessionName);
   fs.mkdirSync(paths.agentDir, { recursive: true });
   fs.mkdirSync(paths.sessionsDir, { recursive: true });
+  if (runtime === "pi") {
+    try { preparePiResources(paths.agentDir, nodePath.join(process.env.HOME ?? "", ".pi", "agent")); }
+    catch {
+      console.error(`${PI_RUNNER_ERROR_MARKER} Pi extensions or MCP preparation failed; check the configuration.`);
+      process.exitCode = 2;
+      return;
+    }
+  }
+
   if (runtime === "pi") {
     try { preparePiAccount(paths.agentDir, args.accountHome); }
     catch (err) {
