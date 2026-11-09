@@ -14,7 +14,9 @@ import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
 import path from "node:path";
 import type { QueueRepository } from "../domain/queue-repository.js";
-import { loadConfig, saveConfig } from "../domain/gateway/slack/config.js";
+import { loadConfig, saveConfig, type SlackConnectorConfig } from "../domain/gateway/slack/config.js";
+import { loadDiscordConfig, saveDiscordConfig } from "../domain/gateway/discord/config.js";
+import { activeChatConnector, type ChatConnectorKind } from "../domain/gateway/chat-connector.js";
 import { SeenStore } from "../domain/gateway/slack/state-store.js";
 import { makeQueuePorts, seedBacklogAsHistory } from "../domain/gateway/slack/queue-access.js";
 import { postOpenAsks } from "../domain/gateway/slack/open-asks.js";
@@ -145,11 +147,14 @@ export function gatewayRoutes(opts: {
   });
 
   // OPR.0.6.0.5 — read-only: the same manifest `rig slack manifest` prints. No config, no secrets.
-  app.get("/slack/status", (c) => {
-    const subsystem = c.get("gatewaySubsystem" as never) as SubsystemHandle | undefined;
-    const snapshot = subsystem?.connectorStatus?.();
-    return c.json({ observedAt: new Date().toISOString(), ...(snapshot ?? { state: "unavailable", connector: null }) });
-  });
+  // The running connector's status, whichever it is (its `platform` says which); both paths answer.
+  for (const kind of ["slack", "discord"] as const) {
+    app.get(`/${kind}/status`, (c) => {
+      const subsystem = c.get("gatewaySubsystem" as never) as SubsystemHandle | undefined;
+      const snapshot = subsystem?.connectorStatus?.();
+      return c.json({ observedAt: new Date().toISOString(), ...(snapshot ?? { state: "unavailable", connector: null }) });
+    });
+  }
 
   app.get("/slack/manifest", (c) => c.json(buildSlackAppManifest()));
 
@@ -197,10 +202,9 @@ export function gatewayRoutes(opts: {
     if (!registry.ok) return c.json({ error: "human_registry_unavailable", message: registry.error }, 503);
     const human = registry.entities.find((candidate) => candidate.entityId === entityId);
     if (!human) return c.json({ error: "human_not_found", entityId }, 404);
-    const cfg = loadConfig(home);
-    const botToken = resolveSecret("SLACK_BOT_TOKEN", { envFile: cfg.secretsEnvFile ?? undefined });
+    const connector = activeChatConnector(home);
     const readiness = await resolveHumanDeliveryReadiness(
-      { human, config: cfg, gatewayState, botToken, home },
+      { human, config: connector.config, connectorKind: connector.kind, gatewayState, botToken: connector.botToken, home },
       { entities: registry.entities },
     );
     return c.json({ ok: true, readiness });
@@ -365,109 +369,124 @@ export function gatewayRoutes(opts: {
   // Slack slice 05 (#1679): show the asks still open that enable seeded as history, through ordinary delivery, and say
   // what became of each. Run after enable; enable itself is unchanged. Recorded like enable, with its actor and reason.
   // Registered before /slack/:operation, which answers any other operation with 404.
-  app.post("/slack/post-open-asks", async (c) => {
-    const body = (await c.req.json<{ actor?: string; reason?: string; waitSeconds?: number }>().catch(() => ({} as { actor?: string; reason?: string; waitSeconds?: number }))) ?? {};
-    const actor = requireSenderIdentity(c, { verb: "slack post-open-asks", bodyClaim: typeof body.actor === "string" ? body.actor : null });
-    if (!actor.ok) return actor.response;
-    const queueRepo = c.get("queueRepo" as never) as QueueRepository | undefined;
-    const subsystem = c.get("gatewaySubsystem" as never) as SubsystemHandle | undefined;
-    if (!subsystem?.dispatch || !queueRepo) return c.json({ error: "gateway_admin_unavailable" }, 503);
-    const home = opts.home ?? OPENRIG_HOME;
-    const status = subsystem.status();
-    const outboundReady = (status.connector as { outboundReady?: unknown } | undefined)?.outboundReady === true;
-    if (!loadConfig(home).enabled || status.state !== "active" || !outboundReady) {
-      return c.json({ error: "slack_not_posting", message: loadConfig(home).enabled
-        ? "Slack is enabled here but can't post yet (rig slack status says why), so no ask was shown."
-        : "Slack isn't enabled on this machine, so no ask was shown. Run rig slack enable first, then this." }, 409);
-    }
-    const registry = loadHumanRegistry(home);
-    if (!registry.ok) return c.json({ error: "human_registry_unavailable", message: `Can't tell whose asks are open: ${registry.error}` }, 503);
-    const waitSeconds = typeof body.waitSeconds === "number" && body.waitSeconds >= 0 ? Math.min(body.waitSeconds, 60) : 10;
-    const pending = adminTail.then(() => runChannelOperation({
-      action: "post-open-asks", subject: "slack", actor: actor.session, provenance: actor.provenance,
-      reason: (typeof body.reason === "string" && body.reason.trim()) || "show the asks still open after enable",
-      before: { enabled: true, active: true },
-      run: async () => {
-        const value = await postOpenAsks({
-          queueRepo, home, loadHumanRegistry: () => registry, minimumLevelThatPosts: loadConfig(home).minimumLevelThatPosts,
-          dispatch: (op, ref, payload, o) => subsystem.dispatch!(op, ref, payload, o), actor: actor.session, waitMs: waitSeconds * 1000,
-        });
-        return { value, after: { enabled: loadConfig(home).enabled, active: subsystem.status().state === "active" },
-          effect: value.asks.some((a) => a.reshown) ? "applied" as const : "no-op" as const };
-      },
-    }, home));
-    adminTail = pending.catch(() => undefined);
-    const result = await pending;
-    return c.json({ ok: true, ...result.value, receipt: result.receipt });
-  });
+  // The admin operations, per chat connector: each reads and writes its own config, and only one is enabled at a time.
+  const connectors: Record<ChatConnectorKind, { label: string; load: (home: string) => SlackConnectorConfig; save: (cfg: SlackConnectorConfig, home: string) => string }> = {
+    slack: { label: "Slack", load: loadConfig, save: saveConfig },
+    discord: { label: "Discord", load: loadDiscordConfig, save: saveDiscordConfig },
+  };
+  for (const kind of ["slack", "discord"] as const) {
+    const { label, load: loadKindConfig, save: saveKindConfig } = connectors[kind];
+    const other: ChatConnectorKind = kind === "slack" ? "discord" : "slack";
 
-  app.post("/slack/:operation", async (c) => {
-    const operation = c.req.param("operation");
-    if (operation !== "enable" && operation !== "disable") return c.notFound();
-    const body = (await c.req.json<{ actor?: string; reason?: string }>().catch(() => ({} as { actor?: string; reason?: string }))) ?? {};
-    const actor = requireSenderIdentity(c, { verb: `slack ${operation}`, bodyClaim: typeof body.actor === "string" ? body.actor : null });
-    if (!actor.ok) return actor.response;
-    const reason = typeof body.reason === "string" ? body.reason.trim() : "";
-    if (operation === "disable" && !reason) return c.json({ error: "reason_required", message: "Disabling human delivery requires --reason describing the shutdown." }, 400);
-    const queueRepo = c.get("queueRepo" as never) as QueueRepository | undefined;
-    const subsystem = c.get("gatewaySubsystem" as never) as SubsystemHandle | undefined;
-    if (!subsystem || (operation === "enable" && !queueRepo)) return c.json({ error: "gateway_admin_unavailable" }, 503);
-    const home = opts.home ?? OPENRIG_HOME;
-    const pending = adminTail.then(async () => {
-      const cfg = loadConfig(home);
-      const enabled = operation === "enable";
-      const state = () => ({ enabled: loadConfig(home).enabled, active: subsystem.status().state === "active" });
-      return runChannelOperation({
-        action: operation, subject: "slack", actor: actor.session, provenance: actor.provenance,
-        reason: reason || "enable human delivery", before: state(),
+    app.post(`/${kind}/post-open-asks`, async (c) => {
+      const body = (await c.req.json<{ actor?: string; reason?: string; waitSeconds?: number }>().catch(() => ({} as { actor?: string; reason?: string; waitSeconds?: number }))) ?? {};
+      const actor = requireSenderIdentity(c, { verb: `${kind} post-open-asks`, bodyClaim: typeof body.actor === "string" ? body.actor : null });
+      if (!actor.ok) return actor.response;
+      const queueRepo = c.get("queueRepo" as never) as QueueRepository | undefined;
+      const subsystem = c.get("gatewaySubsystem" as never) as SubsystemHandle | undefined;
+      if (!subsystem?.dispatch || !queueRepo) return c.json({ error: "gateway_admin_unavailable" }, 503);
+      const home = opts.home ?? OPENRIG_HOME;
+      const loadConfig = () => loadKindConfig(home);
+      const status = subsystem.status();
+      const outboundReady = (status.connector as { outboundReady?: unknown } | undefined)?.outboundReady === true;
+      if (!loadConfig().enabled || status.state !== "active" || !outboundReady) {
+        return c.json({ error: `${kind}_not_posting`, message: loadConfig().enabled
+          ? `${label} is enabled here but can't post yet (rig ${kind} status says why), so no ask was shown.`
+          : `${label} isn't enabled on this machine, so no ask was shown. Run rig ${kind} enable first, then this.` }, 409);
+      }
+      const registry = loadHumanRegistry(home);
+      if (!registry.ok) return c.json({ error: "human_registry_unavailable", message: `Can't tell whose asks are open: ${registry.error}` }, 503);
+      const waitSeconds = typeof body.waitSeconds === "number" && body.waitSeconds >= 0 ? Math.min(body.waitSeconds, 60) : 10;
+      const pending = adminTail.then(() => runChannelOperation({
+        action: "post-open-asks", subject: kind, actor: actor.session, provenance: actor.provenance,
+        reason: (typeof body.reason === "string" && body.reason.trim()) || "show the asks still open after enable",
+        before: { enabled: true, active: true },
         run: async () => {
-          let value = { seeded: 0, onlineStatus: `slack connector already ${enabled ? "enabled" : "disabled"}; no change` };
-          if (cfg.enabled === enabled) {
-            if (enabled) value.onlineStatus += ". This call did not reload configuration or tokens. To reload, run rig daemon stop, then rig daemon start; environment token overrides still take precedence.";
-            return { value, after: state(), effect: "no-op" };
-          }
-          if (enabled) {
-            const registry = loadHumanRegistry(home);
-            if (!registry.ok) throw new HTTPException(503, { res: c.json({
-              error: "human_registry_unavailable",
-              message: `Cannot seed the existing delivery backlog: ${registry.error}. ` +
-                "Register a human with rig gateway human add, or repair and re-project the existing human registry before enabling delivery.",
-            }, 503) });
-            const seen = new SeenStore(path.join(home, "state", "slack-outbound-seen.jsonl"));
-            const slackOnlyRegistry = {
-              ...registry,
-              entities: registry.entities.filter((entity) =>
-                entity.connectorBindings.some((b) => b.role === "primary" && b.kind === "slack"),
-              ),
-            };
-            const dispatchBuffer = new DispatchBuffer(home);
-            value = await seedBacklogAsHistory({
-              queue: makeQueuePorts(queueRepo!, {
-                loadHumanRegistry: () => slackOnlyRegistry,
-                sharedChannels: () => sharedChannelAddresses(home),
-              }),
-              seen,
-              filter: { minimumLevel: cfg.minimumLevelThatPosts },
-              buffer: {
-                pending: () =>
-                  dispatchBuffer.pending().filter((d) => {
-                    const p = (d.payload ?? {}) as RelayPayloadCarry;
-                    if (p.relayConnectorRef || p.relayEnvelope) return false;
-                    return resolvePrimaryRelayBinding(p.destinationSession ?? d.entityBindingRef, registry) === null;
-                  }),
-              },
-            });
-          } else value.onlineStatus = "slack connector disabled";
-          saveConfig({ ...cfg, enabled }, home);
-          subsystem.restart();
-          return { value, after: state(), effect: "applied" };
+          const value = await postOpenAsks({
+            queueRepo, home, loadHumanRegistry: () => registry, minimumLevelThatPosts: loadConfig().minimumLevelThatPosts,
+            dispatch: (op, ref, payload, o) => subsystem.dispatch!(op, ref, payload, o), actor: actor.session, waitMs: waitSeconds * 1000,
+          });
+          return { value, after: { enabled: loadConfig().enabled, active: subsystem.status().state === "active" },
+            effect: value.asks.some((a) => a.reshown) ? "applied" as const : "no-op" as const };
         },
-      }, home);
+      }, home));
+      adminTail = pending.catch(() => undefined);
+      const result = await pending;
+      return c.json({ ok: true, ...result.value, receipt: result.receipt });
     });
-    adminTail = pending.catch(() => undefined);
-    const result = await pending;
-    return c.json({ ok: true, ...result.value, receipt: result.receipt, subsystem: subsystem.status() });
-  });
+
+    app.post(`/${kind}/:operation`, async (c) => {
+      const operation = c.req.param("operation");
+      if (operation !== "enable" && operation !== "disable") return c.notFound();
+      const body = (await c.req.json<{ actor?: string; reason?: string }>().catch(() => ({} as { actor?: string; reason?: string }))) ?? {};
+      const actor = requireSenderIdentity(c, { verb: `${kind} ${operation}`, bodyClaim: typeof body.actor === "string" ? body.actor : null });
+      if (!actor.ok) return actor.response;
+      const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+      if (operation === "disable" && !reason) return c.json({ error: "reason_required", message: "Disabling human delivery requires --reason describing the shutdown." }, 400);
+      const queueRepo = c.get("queueRepo" as never) as QueueRepository | undefined;
+      const subsystem = c.get("gatewaySubsystem" as never) as SubsystemHandle | undefined;
+      if (!subsystem || (operation === "enable" && !queueRepo)) return c.json({ error: "gateway_admin_unavailable" }, 503);
+      const home = opts.home ?? OPENRIG_HOME;
+      // One chat connector at a time (Discord replaces Slack; nothing posts to both).
+      if (operation === "enable" && connectors[other].load(home).enabled) {
+        return c.json({ error: "other_connector_enabled", message: `The ${connectors[other].label} connector is enabled on this machine, and only one chat connector runs at a time. Run rig ${other} disable --reason "<why>" first, then this.` }, 409);
+      }
+      const pending = adminTail.then(async () => {
+        const cfg = loadKindConfig(home);
+        const enabled = operation === "enable";
+        const state = () => ({ enabled: loadKindConfig(home).enabled, active: subsystem.status().state === "active" });
+        return runChannelOperation({
+          action: operation, subject: kind, actor: actor.session, provenance: actor.provenance,
+          reason: reason || "enable human delivery", before: state(),
+          run: async () => {
+            let value = { seeded: 0, onlineStatus: `${kind} connector already ${enabled ? "enabled" : "disabled"}; no change` };
+            if (cfg.enabled === enabled) {
+              if (enabled) value.onlineStatus += ". This call did not reload configuration or tokens. To reload, run rig daemon stop, then rig daemon start; environment token overrides still take precedence.";
+              return { value, after: state(), effect: "no-op" };
+            }
+            if (enabled) {
+              const registry = loadHumanRegistry(home);
+              if (!registry.ok) throw new HTTPException(503, { res: c.json({
+                error: "human_registry_unavailable",
+                message: `Cannot seed the existing delivery backlog: ${registry.error}. ` +
+                  "Register a human with rig gateway human add, or repair and re-project the existing human registry before enabling delivery.",
+              }, 503) });
+              const seen = new SeenStore(path.join(home, "state", "slack-outbound-seen.jsonl"));
+              const connectorOnlyRegistry = {
+                ...registry,
+                entities: registry.entities.filter((entity) =>
+                  entity.connectorBindings.some((b) => b.role === "primary" && b.kind === kind),
+                ),
+              };
+              const dispatchBuffer = new DispatchBuffer(home);
+              value = await seedBacklogAsHistory({
+                queue: makeQueuePorts(queueRepo!, {
+                  loadHumanRegistry: () => connectorOnlyRegistry,
+                  sharedChannels: () => sharedChannelAddresses(home),
+                }),
+                seen,
+                filter: { minimumLevel: cfg.minimumLevelThatPosts },
+                buffer: {
+                  pending: () =>
+                    dispatchBuffer.pending().filter((d) => {
+                      const p = (d.payload ?? {}) as RelayPayloadCarry;
+                      if (p.relayConnectorRef || p.relayEnvelope) return false;
+                      return resolvePrimaryRelayBinding(p.destinationSession ?? d.entityBindingRef, registry) === null;
+                    }),
+                },
+              });
+            } else value.onlineStatus = `${kind} connector disabled`;
+            saveKindConfig({ ...cfg, enabled }, home);
+            subsystem.restart();
+            return { value, after: state(), effect: "applied" };
+          },
+        }, home);
+      });
+      adminTail = pending.catch(() => undefined);
+      const result = await pending;
+      return c.json({ ok: true, ...result.value, receipt: result.receipt, subsystem: subsystem.status() });
+    });
+  }
 
   return app;
 }

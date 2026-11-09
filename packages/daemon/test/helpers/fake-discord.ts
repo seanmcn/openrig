@@ -21,7 +21,8 @@ export const BOT_ID = "900000000000000001";
 
 export class FakeDiscord implements DiscordRest {
   private seq = 0;
-  clock = Date.UTC(2026, 10, 9, 12, 0, 0);
+  /** Just behind real time: recovery windows are computed against the real clock. */
+  clock = Date.now() - 10 * 60_000;
   readonly messages = new Map<string, FakeMessage>();
   /** thread id → parent channel id */
   readonly threads = new Map<string, string>();

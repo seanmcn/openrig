@@ -4,6 +4,7 @@ import { verifyScopes, verifyChannelMembership, type ScopeVerdict } from "./slac
 import { mappedChannels } from "./slack/channel-map.js";
 import { loadRelayProfiles, type LoadRelayProfilesResult } from "./relay-config.js";
 import type { SecretFsOps } from "./slack/secrets.js";
+import { verifyDiscordChannel } from "./discord/verify.js";
 
 export type HumanDeliveryReadinessState = "ready" | "not-ready" | "indeterminate";
 
@@ -25,6 +26,8 @@ export interface HumanDeliveryReadinessInput {
   config: SlackConnectorConfig;
   gatewayState: string;
   botToken: string | null;
+  /** The chat connector `config` and `botToken` belong to (default slack). */
+  connectorKind?: "slack" | "discord";
   /** Optional preloaded relay profiles; when omitted for a relay primary binding, loaded from the full human registry. */
   relayProfiles?: LoadRelayProfilesResult | null;
   home?: string;
@@ -33,6 +36,7 @@ export interface HumanDeliveryReadinessInput {
 export interface HumanDeliveryReadinessDeps {
   verifyScopes?: (token: string, required: string[]) => Promise<ScopeVerdict>;
   verifyMembership?: (token: string, channel: string) => Promise<{ ok: boolean; isMember: boolean; error?: string }>;
+  verifyDiscordChannel?: (token: string, channel: string) => Promise<{ ok: boolean; error?: string }>;
   now?: () => Date;
   fsops?: SecretFsOps;
   entities?: readonly HumanFragment[];
@@ -109,12 +113,30 @@ export async function resolveHumanDeliveryReadiness(
     nextAction: string | null,
   ): HumanDeliveryReadiness => ({ state, configured, enabled, active, ready: state === "ready", ...base, reason, nextAction });
 
-  if (primary.kind !== "slack") return result("not-ready", `primary connector kind '${primary.kind}' is unsupported`, "rig gateway human show " + input.human.entityId + " --json");
-  if (!input.botToken || !input.config.channel) return result("not-ready", "connector configuration is incomplete (bot token or channel missing)", "rig slack status --json");
-  if (!enabled) return result("not-ready", "connector is configured but disabled", "rig slack enable");
+  const kind = input.connectorKind ?? "slack";
+  if (primary.kind !== kind) return result("not-ready", `primary connector kind '${primary.kind}' is unsupported${primary.kind === "slack" || primary.kind === "discord" ? ` (this machine runs ${kind})` : ""}`, "rig gateway human show " + input.human.entityId + " --json");
+  if (!input.botToken || !input.config.channel) return result("not-ready", "connector configuration is incomplete (bot token or channel missing)", `rig ${kind} status --json`);
+  if (!enabled) return result("not-ready", "connector is configured but disabled", `rig ${kind} enable`);
   if (input.gatewayState !== "active") return result("not-ready", `gateway subsystem is ${input.gatewayState}`, "rig daemon logs");
   if (input.config.outboundDestinations.length > 0 && !input.config.outboundDestinations.includes(input.human.address)) {
-    return result("not-ready", `registered address ${input.human.address} is excluded by connector policy`, "rig slack status --json");
+    return result("not-ready", `registered address ${input.human.address} is excluded by connector policy`, `rig ${kind} status --json`);
+  }
+
+  if (kind === "discord") {
+    // Discord has no scopes to read back: the bot reading each channel it posts to is the check.
+    const verify = deps.verifyDiscordChannel ?? ((token, channel) => verifyDiscordChannel(token, channel));
+    const channels = mappedChannels(input.config);
+    const problems: string[] = [];
+    try {
+      for (const c of channels) {
+        const r = await verify(input.botToken, c.channel);
+        if (!r.ok) problems.push(`${c.isDefault ? "its configured channel" : `mapped channel ${c.channel}`}: ${r.error ?? "not readable"}`);
+      }
+    } catch (error) {
+      return result("indeterminate", `connector readiness could not be verified: ${(error as Error).message}`, "rig discord verify --json");
+    }
+    if (problems.length) return result("not-ready", `the bot can't read ${problems.join("; ")}`, "rig discord verify --json");
+    return result("ready", "the bot can read every channel it posts to", null);
   }
 
   try {

@@ -24,8 +24,8 @@ import { parseSessionName } from "../session-name.js";
 
 // ── Schema (closed enums; extend only additively behind the contract) ──
 export const HUMAN_ENTITY_CLASSES = new Set(["human"]);          // M1's only class
-export const HUMAN_CONNECTOR_KINDS = new Set(["slack", "relay"]);
-export type HumanConnectorKind = "slack" | "relay";
+export const HUMAN_CONNECTOR_KINDS = new Set(["slack", "discord", "relay"]);
+export type HumanConnectorKind = "slack" | "discord" | "relay";
 export const HUMAN_BINDING_ROLES = new Set(["primary", "secondary"]);
 export const HUMAN_DELIVERY_CLASSES = new Set(["A", "B", "C", "D"]);
 // entityId is the fragment key + filename: a stable slug that survives platform
@@ -402,7 +402,7 @@ export type SlackHandleResolution =
 export function resolveSlackHandle(
   handle: string,
   entities: readonly HumanFragment[],
-  connectorKind: "slack" = "slack",
+  connectorKind: "slack" | "discord" = "slack",
 ): SlackHandleResolution {
   for (const e of entities) {
     for (const b of e.connectorBindings) {

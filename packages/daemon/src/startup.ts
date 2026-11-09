@@ -2819,16 +2819,23 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // no drivers) — `rig slack status` names what is missing.
   const { GatewaySubsystem } = await import("./domain/gateway/gateway-subsystem.js");
   const { buildSlackGatewayWire, makeHumanReplyResolver } = await import("./domain/gateway/slack/slack-subsystem.js");
+  const { buildDiscordGatewayWire } = await import("./domain/gateway/discord/discord-subsystem.js");
+  const { discordEnabled } = await import("./domain/gateway/chat-connector.js");
   const { createRelayInboundHandler } = await import("./domain/gateway/relay-inbound.js");
   const effectiveOpenRigHome = getOpenRigHome();
   const gatewaySubsystem = new GatewaySubsystem({
     home: effectiveOpenRigHome,
-    wire: () => buildSlackGatewayWire({
-      home: effectiveOpenRigHome,
-      queueRepo: queueRepoInstance,
-      resolveHumanReply: makeHumanReplyResolver(queueRepoInstance, deps.missionControlWriteContract, effectiveOpenRigHome),
-      log: (m) => console.log(`[gateway] ${m}`),
-    }),
+    // One chat connector at a time: Discord when its connector is enabled, otherwise Slack. Chosen at each wiring, so
+    // `rig discord enable` / `rig slack enable` (which restart the subsystem) switch without a daemon restart.
+    wire: () => {
+      const wireOpts = {
+        home: effectiveOpenRigHome,
+        queueRepo: queueRepoInstance,
+        resolveHumanReply: makeHumanReplyResolver(queueRepoInstance, deps.missionControlWriteContract, effectiveOpenRigHome),
+        log: (m: string) => console.log(`[gateway] ${m}`),
+      };
+      return discordEnabled(effectiveOpenRigHome) ? buildDiscordGatewayWire(wireOpts) : buildSlackGatewayWire(wireOpts);
+    },
     log: (m) => console.log(`[gateway] ${m}`),
   });
   gatewaySubsystem.start();

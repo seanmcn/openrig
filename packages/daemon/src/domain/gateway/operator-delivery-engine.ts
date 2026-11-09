@@ -13,8 +13,7 @@ import type { DispatchResult } from "./dispatcher.js";
 import type { HumanFragment, LoadResult } from "./human-registry.js";
 import { loadHumanRegistry } from "./human-registry.js";
 import { resolveDefaultPerson } from "./participants.js";
-import { loadConfig } from "./slack/config.js";
-import { resolveSecret } from "./slack/secrets.js";
+import { activeChatConnector } from "./chat-connector.js";
 import { resolveHumanDeliveryReadiness } from "./human-readiness.js";
 import { quietHoldFor } from "./human-quiet-windows.js";
 import { OUTBOUND_OP } from "./slack/outbound-driver.js";
@@ -131,15 +130,17 @@ export function makeOperatorDeliveryEngine(deps: {
       if (!human) {
         return { decision: reg.entities.length ? "undeliverable:no-default-person" : "undeliverable:no-registered-human", resolved: false, dispatched: false };
       }
-      const cfg = loadConfig(deps.home);
+      const connector = activeChatConnector(deps.home);
+      const cfg = connector.config;
       // A local carrier remains visible; no new gateway decision belongs to a channel that cannot post.
       // Already-accepted decisions returned above retain gateway custody, even if readiness later changes.
       try {
         const readiness = await (deps.readiness?.(human) ?? resolveHumanDeliveryReadiness({
           human,
           config: cfg,
+          connectorKind: connector.kind,
           gatewayState: deps.gatewayState?.() ?? "unavailable",
-          botToken: resolveSecret("SLACK_BOT_TOKEN", { envFile: cfg.secretsEnvFile ?? undefined }),
+          botToken: connector.botToken,
           home: deps.home,
         }, { entities: reg.entities }));
         if (!readiness.ready) return { decision: `unavailable:human-delivery:${readiness.reason}`, resolved: false, dispatched: false };
