@@ -393,20 +393,29 @@ exec tmux -S ${shellQuote(tmuxSocketPath)} "$@"
   const cleanup = () => {
     if (!existsSync(root)) return;
     if (existsSync(tmuxSocketPath)) {
-      let privateServerRunning = true;
+      const query = (args: string[]) => execFileSync("tmux", ["-S", tmuxSocketPath, ...args], {
+        env: { ...env, PATH: originalPath } as NodeJS.ProcessEnv,
+        stdio: ["ignore", "pipe", "ignore"],
+        encoding: "utf8",
+        timeout: 2_000,
+      });
+      // The server answers display-message with or without sessions. list-panes -a doesn't: on a server with none,
+      // the `tmux -D` a scenario daemon starts and `rig down` empties, it exits 1, and taking that for "no server" left
+      // one running, socketless, after every scenario run.
       let privateProcesses = "";
       try {
-        privateProcesses = execFileSync("tmux", ["-S", tmuxSocketPath, "list-panes", "-a", "-F", "#{pid} #{pane_pid}"], {
-          env: { ...env, PATH: originalPath } as NodeJS.ProcessEnv,
-          stdio: ["ignore", "pipe", "ignore"],
-          encoding: "utf8",
-          timeout: 2_000,
-        });
+        privateProcesses = query(["display-message", "-p", "#{pid}"]);
       } catch (error) {
         if (typeof (error as { status?: unknown }).status !== "number") throw error;
-        privateServerRunning = false;
       }
+      const privateServerRunning = privateProcesses.trim() !== "";
       if (privateServerRunning) {
+        try {
+          privateProcesses += ` ${query(["list-panes", "-a", "-F", "#{pid} #{pane_pid}"])}`;
+        } catch (error) {
+          // No sessions, so no panes: the server's own pid is all there is to wait for.
+          if (typeof (error as { status?: unknown }).status !== "number") throw error;
+        }
         // kill-server acknowledges the signal before pane processes have exited.
         // Capture only this private server's existing process tree before signalling.
         const owned = new Set(privateProcesses.trim().split(/\s+/).map(Number));

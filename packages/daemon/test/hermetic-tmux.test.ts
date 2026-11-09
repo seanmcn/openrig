@@ -300,6 +300,33 @@ setInterval(() => {}, 1000);
       await at(sentinelSocketPath, ["kill-session", "-t", "unrelated"]).catch(() => {});
     }
   });
+
+  // A scenario daemon starts its seat server with `tmux -D`, which stays up with no sessions, and `rig down` leaves it
+  // so. On such a server `list-panes -a` exits 1 ("no current target"); cleanup must still end it, or it outlives the
+  // removed scaffold with no socket, one per scenario run.
+  it("cleanup terminates a scaffold-owned server left with no sessions", async () => {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const run = promisify(execFile);
+    const s = prepareHermeticEnv({ baseEnv: cleanBase() });
+    scaffolds.push(s);
+    const env = s.env as NodeJS.ProcessEnv;
+    // Started as the daemon's tmux adapter starts it: backgrounded by a shell, so it isn't this process's child (whose
+    // exit would linger as a zombie that still answers a signal check).
+    await run("/bin/sh", ["-c", "tmux -D </dev/null >/dev/null 2>&1 &"], { env });
+    let serverPid = 0;
+    await vi.waitFor(async () => {
+      serverPid = Number((await run("tmux", ["display-message", "-p", "#{pid}"], { env })).stdout.trim());
+      expect(serverPid).toBeGreaterThan(1);
+    }, { timeout: 5_000, interval: 50 });
+    expect((await run("tmux", ["list-sessions"], { env })).stdout.trim()).toBe("");
+
+    s.cleanup();
+    expect(existsSync(s.root)).toBe(false);
+    await vi.waitFor(() => {
+      expect(() => process.kill(serverPid, 0)).toThrow();
+    }, { timeout: 2_000, interval: 25 });
+  });
 });
 
 // Guard finding 4: the previous version snapshotted only top-level `tmux-*`
