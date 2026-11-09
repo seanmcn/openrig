@@ -66,7 +66,7 @@ import { physicalSessionName } from "./session-registry.js";
 import type { QueueWakeFacts } from "./draft-aware-delivery.js";
 import { derivePickup, type PickupReceipt } from "./queue-pickup.js";
 import { withRecoveryIndex } from "./queue-recovery.js";
-import { lastMeaningfulTransition, readWaitingView, type WaitingView, type WaitingActivityReader } from "./queue-waiting.js";
+import { lastMeaningfulTransitionMany, meaningfulFor, readWaitingView, WaitingStatements, type WaitingView, type WaitingActivityReader, type WaitingReads } from "./queue-waiting.js";
 import { isOpenRigSender, OPENRIG_SENDER, wrapPaneEnvelope } from "../lib/pane-envelope.js";
 import { isBoundTerminalSeat } from "./terminal-seat.js";
 import { renderQueueHandoffNudge } from "./queue-nudge-text.js";
@@ -308,6 +308,9 @@ export interface QueueItem {
    *  (convention C3). NULL for all non-human-routed items (BR-1); required
    *  at the domain write path only when the §5 predicate is true. */
   evidenceRef: string | null;
+  /** Set only on a row whose content queue erasure removed (queue-erasure.ts): its body and other content are empty
+   *  because they were erased, not because the row was written that way. */
+  contentErasedAt?: string;
   /** Present only on compact list rows, which omit these fields entirely so omitted content
    *  can't be mistaken for an empty value. Full reads never carry this marker. */
   fieldsElided?: Array<(typeof COMPACT_ELIDED_FIELDS)[number]>;
@@ -363,6 +366,7 @@ interface QueueItemRow {
   delegated_decision?: string | null;
   summary: string | null;
   evidence_ref: string | null;
+  content_erased_at?: string | null;
   closure_reason: string | null;
   closure_target: string | null;
   closure_required_at: string | null;
@@ -1075,6 +1079,7 @@ export class QueueRepository {
   private readonly hasMintingGenColumn: boolean;
   private readonly hasClaimedGenColumn: boolean;
   private readonly hasQueueTransitionsTable: boolean;
+  private readonly hasErasedIdsTable: boolean;
   private readonly hasTransitionProvenanceColumn: boolean;
   private readonly hasOwnerNotificationColumns: boolean;
   private readonly loadHumanRegistryFn: () => LoadResult;
@@ -1157,6 +1162,7 @@ export class QueueRepository {
     this.hasDelegatedDecisionColumn = detectQueueColumn(db, "delegated_decision");
     this.hasEvidenceRefColumn = detectQueueColumn(db, "evidence_ref");
     this.hasQueueTransitionsTable = detectTable(db, "queue_transitions");
+    this.hasErasedIdsTable = detectTable(db, "queue_erased_ids");
     const transitionColumns = this.hasQueueTransitionsTable
       ? new Set((db.prepare("PRAGMA table_info(queue_transitions)").all() as Array<{ name: string }>).map((column) => column.name))
       : new Set<string>();
@@ -1534,6 +1540,21 @@ export class QueueRepository {
    * hold is left alone; failed/uncertain history permits another attempt. A recovery
    * pass tracks its coalesced members only in memory so each is attempted once per pass.
    */
+  /** #2789: a wake committed while its seat had no pane froze a binding that can never match once the seat is bound, so
+   *  the delivery guard refused it on every retry. Such an intent takes its first live binding, on the same node and
+   *  canonical session, only when it is known to have written no input (pending, or failed, which a send records only
+   *  without a write) and carries no expected identity of its own. A binding that ever named a pane is never replaced,
+   *  so a wake can't move to another occupant; the guard's write-time check against this binding still holds.
+   *  `entry` is the intent as read before its claim. Called inside the claim's transaction. */
+  private bindFirstTarget(entry: OutboxEntry): void {
+    const frozen = entry.guardBinding;
+    if (!frozen || frozen.pane !== null || (entry.deliveryState !== "pending" && entry.deliveryState !== "failed")) return;
+    if (this.outbox!.expectedIdentity(entry.outboxId)) return;
+    const live = this.transport?.deliveryTarget?.(entry.destinationSession);
+    if (!live?.pane || live.nodeId !== frozen.nodeId || live.session !== frozen.session) return;
+    this.db.prepare("UPDATE outbox_entries SET guard_binding = ? WHERE outbox_id = ?").run(JSON.stringify(live), entry.outboxId);
+  }
+
   private async deliverWakeIntent(
     outboxId: string,
     attempted: Set<string> = new Set(), // this pass's attempt history, inherited by any release it delivers
@@ -1550,6 +1571,7 @@ export class QueueRepository {
     let recovering = false;
     const claim = (entry: OutboxEntry): boolean => {
       if (!eligible(entry) || attempted.has(entry.outboxId) || !this.outbox!.claimForDelivery(entry.outboxId)) return false;
+      this.bindFirstTarget(entry);
       attempted.add(entry.outboxId);
       recovering ||= entry.deliveryState !== "pending";
       return true;
@@ -1914,6 +1936,59 @@ export class QueueRepository {
     }
   }
 
+  /** The rule for re-sending a wake recorded unroutable once its seat may be back, shared by the stuck sweep and
+   *  {@link retryUnroutableWakesOnReachable}: unclaimed, not a person's notice, not a local human decision with no
+   *  gateway, not held or released for quiet hours, and its seat now pane-bound. A handoff's retry ladder is the
+   *  caller's to check: the sweep defers to a live ladder, the reachable-seat retry leaves every handed-off row to it. */
+  unroutableWakeRetryable(row: QueueItem, now: Date = new Date()): boolean {
+    return row.lastNudgeResult?.startsWith("unroutable:") === true
+      && !row.claimedAt
+      && row.deliveryOutcome !== "never-posted" && row.deliveryOutcome !== "transport-failed"
+      && !this.isLocalHumanDecisionWithoutGateway(row)
+      && !["held", "released"].includes(quietHoldCustody(this.db, row.qitemId, now)?.state ?? "")
+      && this.classifyDestinationOf(row.destinationSession).class === "pane-bound";
+  }
+
+  /** A wake recorded unroutable because its seat wasn't bound yet, as just after a restart (#2789), is re-sent as soon
+   *  as the seat is seen running or idle, rather than at the stuck sweep's next tick; the sweep remains the backstop.
+   *  Only this seat's own pending rows, oldest first, that {@link unroutableWakeRetryable} admits. */
+  async retryUnroutableWakesOnReachable(sessionName: string, state: AgentActivity["state"] | undefined): Promise<void> {
+    if (state !== "running" && state !== "idle") return;
+    const addresses = this.resolveSessionAddresses(sessionName);
+    if (!addresses.length) return;
+    // As for a prompt clear (#2575): while a compaction's restore is owed, the wake would reach the agent before it.
+    if ([sessionName, ...addresses].some(address => this.hasPendingPostCompactStage?.(address))) return;
+    const rows = this.db.prepare(`SELECT qitem_id FROM queue_items
+      WHERE destination_session IN (${addresses.map(() => "?").join(",")}) AND state = 'pending'
+        AND handed_off_from IS NULL AND last_nudge_result LIKE 'unroutable:%' ORDER BY ts_created, qitem_id`)
+      .all(...addresses) as Array<{ qitem_id: string }>;
+    const now = new Date();
+    // One attempt per intent for the pass: a returned result and its resume go as one send, so the second row's turn
+    // mustn't send them again after a refusal.
+    const attempted = new Set<string>();
+    // Correlation can add peers to a send. Each claim must qualify for this retry on its own: a failed wake of this
+    // seat's pending row that the shared rule admits. A peer that may already have been written (indeterminate), or
+    // failed for another reason, isn't claimed here.
+    const eligible = (entry: OutboxEntry): boolean => {
+      if (entry.deliveryState !== "failed" || !entry.auditPointer) return false;
+      const current = this.getById(entry.auditPointer);
+      return current?.state === "pending" && addresses.includes(current.destinationSession) && !current.handedOffFrom
+        && this.unroutableWakeRetryable(current, now);
+    };
+    for (const { qitem_id } of rows) {
+      const row = this.getById(qitem_id);
+      if (!row || row.state !== "pending" || !this.unroutableWakeRetryable(row, now)) continue;
+      // The failed wake may be the row's own intent or an un-park's blocker intent: re-send whichever failed.
+      // One in flight or delivered is never sent again; only a row with no intent at all takes the plain nudge.
+      const intents = this.outbox ? this.db.prepare(`SELECT outbox_id, delivery_state FROM outbox_entries
+        WHERE audit_pointer = ? AND substr(outbox_id, 1, ?) = ?`)
+        .all(qitem_id, WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX) as Array<{ outbox_id: string; delivery_state: string }> : [];
+      if (intents.length) {
+        for (const intent of intents) if (intent.delivery_state === "failed") await this.deliverWakeIntent(intent.outbox_id, attempted, eligible);
+      } else await this.maybeNudge(qitem_id, row.destinationSession, undefined, row.sourceSession);
+    }
+  }
+
   /**
    * W1 (transactional closure): the shared wake-send CORE. Builds the pane
    * envelope, sends with verify, and CLASSIFIES the transport result into the W1
@@ -2274,6 +2349,11 @@ export class QueueRepository {
     }
     this.assertHumanAlert(input.humanAlert, input.destinationSession, input.humanIntent);
     const id = input.qitemId ?? newQitemId();
+    // A row queue erasure deleted keeps only its id: a create that reuses it would bring erased work back.
+    if (input.qitemId && this.hasErasedIdsTable
+      && this.db.prepare("SELECT 1 FROM queue_erased_ids WHERE qitem_id = ?").get(input.qitemId)) {
+      throw new QueueRepositoryError("qitem_erased", `qitem ${input.qitemId} was erased; its id can't be used again.`);
+    }
     const ts = new Date().toISOString();
     const priority = input.priority ?? "routine";
     const tier = input.tier ?? null;
@@ -4432,14 +4512,12 @@ export class QueueRepository {
       .prepare("SELECT * FROM queue_items WHERE qitem_id = ?")
       .get(qitemId) as QueueItemRow | undefined;
     if (!row) return null;
-    const item = this.rowToItem(row);
     // OPR.0.5.6.14 — the row FACE answers "did it reach them" in one read for
     // gateway-routed rows; null for pane-bound (absence-governed, no key lies).
-    const ledger = this.deliveryOutcomeFor(item.qitemId);
+    // The same projection as a listing's, for one row: one read of its owner notifications and ledger.
+    const item = this.projectRows([row], true)[0]!;
     return {
       ...item,
-      deliveryOutcome: ledger?.outcome ?? null,
-      ...(ledger && ledger.outcome !== "posted" && ledger.outcome !== "accepted" ? { deliveryFailureDetail: ledger.detail } : {}),
       ...(item.replyTo ? { replyToFallback: this.replyToFallbackFor(item.qitemId) } : {}),
     };
   }
@@ -4584,18 +4662,25 @@ export class QueueRepository {
         `SELECT ${columns} FROM queue_items ${where} ORDER BY ${orderBy} LIMIT ?`
       )
       .all(...params) as QueueItemRow[];
+    const items = this.projectRows(rows, !opts?.compact);
+    return opts?.compact ? items.map(compactRow) : items;
+  }
+
+  /** The listing projection (list, and show as a listing of one row): each row's item with its delivery outcome, the
+   *  owner notifications, ledgers and shared reads read once for all the rows. includeWaiting: full rows (SELECT *). */
+  private projectRows(rows: QueueItemRow[], includeWaiting: boolean): QueueItem[] {
     const owners = this.transitionLog.ownerNotificationsForQitems(rows.map((row) => row.qitem_id));
     const ledgers = this.deliveryOutcomesFor(rows, owners, true);
-    const items = rows.map((r) => {
+    const reads = this.listingReads(rows, includeWaiting);
+    return rows.map((r) => {
       const ledger = ledgers.get(r.qitem_id);
-      const item = this.rowToItem(r, !opts?.compact, { owners: owners.get(r.qitem_id) ?? [], ledger: ledger ?? null });
+      const item = this.rowToItem(r, includeWaiting, { owners: owners.get(r.qitem_id) ?? [], ledger: ledger ?? null, reads });
       return {
         ...item,
         deliveryOutcome: ledger?.outcome ?? null,
         ...(ledger && ledger.outcome !== "posted" && ledger.outcome !== "accepted" ? { deliveryFailureDetail: ledger.detail } : {}),
       };
     });
-    return opts?.compact ? items.map(compactRow) : items;
   }
 
   /**
@@ -5498,9 +5583,27 @@ export class QueueRepository {
     try { return this.activityReader?.(session) ?? null; } catch { return null; }
   }
 
+  /** What a listing reads once for all its rows instead of once per row. includeWaiting: the rows' waiting views read
+   *  their qitem blockers' last meaningful transitions too. */
+  private listingReads(rows: QueueItemRow[], includeWaiting: boolean): ListingReads {
+    const ids = rows.map((r) => r.qitem_id);
+    if (includeWaiting) for (const r of rows) if (r.blocked_on?.startsWith("qitem-")) ids.push(r.blocked_on);
+    // Each owner's activity once per listing: a row and its waiting view (and every other row to that owner) read the
+    // same seat state. ownerActivity reads a failure as null, so one session's failure stays that session's.
+    const activities = new Map<string, ReturnType<WaitingActivityReader>>();
+    const activity = (session: string): ReturnType<WaitingActivityReader> => {
+      if (!activities.has(session)) activities.set(session, this.ownerActivity(session));
+      return activities.get(session) ?? null;
+    };
+    return { meaningful: lastMeaningfulTransitionMany(this.db, ids), statements: new WaitingStatements(this.db), activity };
+  }
+
   /** listed: the row's owner notifications and ledger, when a listing read them for all its rows. */
   waitingView(qitemId: string, listed?: ListedLedger): WaitingView | null {
-    const view = readWaitingView(this.db, qitemId, this.activityReader, target => this.acceptsDestination(target));
+    // The row in hand, when the listing passed it: its later re-reads below are served by it too.
+    const inHand = listed?.row && listed.row.qitem_id === qitemId ? listed.row : undefined;
+    const reads = listed?.reads && inHand ? { ...listed.reads, row: inHand } : listed?.reads;
+    const view = readWaitingView(this.db, qitemId, listed?.reads?.activity ?? this.activityReader, target => this.acceptsDestination(target), reads);
     if (view && ["pending", "in-progress"].includes(view.state)) {
       // #514 — the unclaimed sweep skips a pending ask already posted to its human in the current
       // episode (same predicate as runStuckSweep), so the view must not promise that sweep.
@@ -5508,7 +5611,9 @@ export class QueueRepository {
       const posted = episodeDelivery !== null;
       const onSteering = !posted && view.state === "pending" && this.humanAskWithoutAlert(qitemId, listed);
       const row = view.state === "pending" && !onSteering
-        ? this.db.prepare(`SELECT state, ${this.hasHumanIntentColumn ? "human_intent" : "NULL AS human_intent"}, destination_session, last_nudge_result FROM queue_items WHERE qitem_id = ?`).get(qitemId) as { state: QueueItem["state"]; human_intent: QueueItem["humanIntent"]; destination_session: string; last_nudge_result: string | null } | undefined
+        ? inHand
+          ? { state: inHand.state as QueueItem["state"], human_intent: inHand.human_intent ?? null, destination_session: inHand.destination_session, last_nudge_result: inHand.last_nudge_result }
+          : this.db.prepare(`SELECT state, ${this.hasHumanIntentColumn ? "human_intent" : "NULL AS human_intent"}, destination_session, last_nudge_result FROM queue_items WHERE qitem_id = ?`).get(qitemId) as { state: QueueItem["state"]; human_intent: QueueItem["humanIntent"]; destination_session: string; last_nudge_result: string | null } | undefined
         : undefined;
       const humanUpdate = !!row && this.isRegisteredHumanUpdate({ state: row.state, humanIntent: row.human_intent, destinationSession: row.destination_session });
       const noticeOutcome = !posted && !onSteering ? (listed ? listed.ledger?.outcome : this.deliveryOutcomeFor(qitemId)?.outcome) : undefined;
@@ -5535,7 +5640,7 @@ export class QueueRepository {
       if (recovery && !localOnly) {
         if (!awaitingHuman && !humanUpdate) view.laterBackstop = { ...view.nextBackstop, note: "Conditional safety net; current delivery/recovery ownership is evaluated first." };
         view.nextBackstop = recovery;
-      } else if (!awaitingHuman && view.state === "pending" && (this.db.prepare("SELECT last_nudge_result FROM queue_items WHERE qitem_id = ?")
+      } else if (!awaitingHuman && view.state === "pending" && (inHand ?? this.db.prepare("SELECT last_nudge_result FROM queue_items WHERE qitem_id = ?")
         .get(qitemId) as { last_nudge_result: string | null } | undefined)?.last_nudge_result === "retained:typing_guard") {
         // Held at the seat on purpose: not stuck, and not picked up. Nothing replays it; reading or delivering it is a
         // deliberate step.
@@ -5582,9 +5687,11 @@ export class QueueRepository {
   private rowToItem(row: QueueItemRow, includeWaiting = true, listed?: ListedLedger): QueueItem {
     // S04 — derive the pickup receipt at the ONE shared projection point (list/show/overdue
     // all flow through here), so the park-vs-strand question is answered by the row face.
-    const meaningful = lastMeaningfulTransition(this.db, row.qitem_id);
-    const waiting = includeWaiting ? this.waitingView(row.qitem_id, listed) : null;
-    const activity = this.ownerActivity(row.destination_session);
+    const meaningful = meaningfulFor(this.db, row.qitem_id, listed?.reads);
+    // A listing's rows are its own SELECT *: the waiting view reads the row in hand instead of reading it again.
+    const waiting = includeWaiting ? this.waitingView(row.qitem_id, listed?.reads ? { ...listed, row } : listed) : null;
+    const listedActivity = listed?.reads?.activity;
+    const activity = listedActivity ? listedActivity(row.destination_session) : this.ownerActivity(row.destination_session);
     const pickup = derivePickup({
       state: row.state,
       lastMeaningfulAt: meaningful?.at,
@@ -5641,6 +5748,7 @@ export class QueueRepository {
       // PL-007: target_repo present only when migration 038 has applied;
       // older test fixtures supply legacy rows where target_repo is undefined.
       targetRepo: row.target_repo ?? null,
+      ...(row.content_erased_at ? { contentErasedAt: row.content_erased_at } : {}),
     };
   }
 }
@@ -5650,8 +5758,13 @@ type LedgerItem = Pick<QueueItem, "qitemId" | "state" | "blockedOn" | "destinati
 
 type DeliveryLedger = { outcome: "posted" | "accepted" | "transport-failed" | "never-posted"; detail: string; episode: { notificationKey: string; startedAt: string } | null };
 
-/** A listed row's owner notifications (newest first) and its delivery ledger, read once for the whole listing. */
-type ListedLedger = { owners: QueueTransition[]; ledger: DeliveryLedger | null };
+/** What a listing reads once for all its rows (see QueueRepository.listingReads): the waiting view's reads, and each
+ *  owner's activity, memoized for the listing. */
+type ListingReads = WaitingReads & { activity?: (session: string) => ReturnType<WaitingActivityReader> };
+
+/** A listed row's owner notifications (newest first) and its delivery ledger, read once for the whole listing, and the
+ *  listing's shared reads. */
+type ListedLedger = { owners: QueueTransition[]; ledger: DeliveryLedger | null; reads?: ListingReads; row?: QueueItemRow };
 
 function ledgerItem(row: LedgerRow): LedgerItem {
   return {
