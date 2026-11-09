@@ -864,7 +864,8 @@ It drives the maintained OpenShell reference; see the [OpenShell example](../ref
 |---|---|---|
 | `rig usage` | — | — |
 | `rig usage top` | — | `--window <duration>`<br>`--top <n>`<br>`--json` |
-| `rig usage cost` | — | `--seat <session>`<br>`--json` |
+| `rig usage cost` | — | `--seat <session>`<br>`--json`<br>`--by <grouping>`<br>`--since <iso>`<br>`--until <iso>` |
+| `rig usage requests` | — | `--seat <session>`<br>`--since <iso>`<br>`--until <iso>`<br>`--json` |
 | `rig usage series` | — | `--seat <session>`<br>`--lane <lane>`<br>`--since <iso>`<br>`--until <iso>`<br>`--limit <n>`<br>`--json` |
 
 ### telemetry

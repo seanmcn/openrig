@@ -70,6 +70,20 @@ const ADVISED_PAYLOAD = {
   advisories: ['since "garbage" was not recognised as a date or time; the existing text comparison against captured_at was used'],
 };
 
+const totals = (requests: number, costUsd: number, unavailable = 0) => ({
+  requests, costUsd, costByProvenance: { runtime_estimate: costUsd, provider_charge: 0 }, costUnavailableRequests: unavailable,
+  tokens: { input: 10 * requests, output: requests, cacheRead: 100 * requests, cacheWrite: 0, reasoning: 0 },
+});
+const COST_BY_PAYLOAD = {
+  by: "slice", since: null, until: null,
+  groups: [{ key: "S.1", ...totals(3, 3, 1) }, { key: null, ...totals(1, 0.001) }],
+  unattributed: { ...totals(1, 8), reasons: { no_rows_held: 1 } },
+  seats: [{ seatSession: "a@r", ...totals(4, 3.001, 1) }, { seatSession: "b@r", ...totals(1, 8) }],
+  total: totals(5, 11, 1),
+  note: "Per-request records (fixture note).",
+};
+const REQUEST_ROWS = [{ id: 1, requestKey: "req_1" }, { id: 2, requestKey: "req_2" }];
+
 describe("rig usage CLI grammar (daemon-backed)", () => {
   let server: http.Server;
   let port: number;
@@ -87,7 +101,11 @@ describe("rig usage CLI grammar (daemon-backed)", () => {
         res.end(JSON.stringify(failure.data));
         return;
       }
-      if ((req.url ?? "").includes("/usage/top")) res.end(JSON.stringify(TOP_PAYLOAD));
+      if ((req.url ?? "").includes("/usage/cost?")) res.end(JSON.stringify(COST_BY_PAYLOAD));
+      else if ((req.url ?? "").includes("/usage/requests")) {
+        const after = new URL(req.url ?? "", "http://x").searchParams.get("after");
+        res.end(JSON.stringify(after === null ? { rows: [REQUEST_ROWS[0]], nextAfter: 1 } : { rows: [REQUEST_ROWS[1]], nextAfter: null }));
+      } else if ((req.url ?? "").includes("/usage/top")) res.end(JSON.stringify(TOP_PAYLOAD));
       else if ((req.url ?? "").includes("since=garbage")) res.end(JSON.stringify(ADVISED_PAYLOAD));
       else res.end(JSON.stringify(SERIES_PAYLOAD));
     });
@@ -154,6 +172,44 @@ describe("rig usage CLI grammar (daemon-backed)", () => {
     expect(errors.join("\n")).toMatch(/--window/);
     expect(errors.join("\n")).toMatch(/1h|90m|2d/); // teaches the accepted forms
     expect(seen.length).toBe(0);
+  });
+
+  it("usage cost --by slice --since --until: the grouping and bounds ARRIVE at the route and --json is verbatim", async () => {
+    seen.length = 0;
+    const { logs, exitCode } = await run(["cost", "--by", "slice", "--since", "2026-11-09T00:00:00Z", "--until", "2026-11-10T00:00:00Z", "--json"], runningDeps(port));
+    expect(exitCode).toBeUndefined();
+    expect(seen[0]!.url).toBe("/api/telemetry/usage/cost?by=slice&since=2026-11-09T00%3A00%3A00Z&until=2026-11-10T00%3A00%3A00Z");
+    expect(JSON.parse(logs.join("\n"))).toEqual(COST_BY_PAYLOAD);
+  });
+
+  it("usage cost --by human render: one line per group, an attributed group without the tag named, the unattributed line with its reasons, and the total", async () => {
+    const { logs } = await run(["cost", "--by", "slice"], runningDeps(port));
+    expect(logs).toEqual([
+      "COST BY SLICE",
+      "S.1  $3.00 (3 requests, 1 without a cost)  tokens in 30 / out 3 / cache read 300 / cache write 0",
+      "(no slice)  <$0.01 (1 request)  tokens in 10 / out 1 / cache read 100 / cache write 0",
+      "unattributed  $8.00 (1 request; no_rows_held 1)  tokens in 10 / out 1 / cache read 100 / cache write 0",
+      "total  $11.00 (5 requests, 1 without a cost) across 2 seats",
+      COST_BY_PAYLOAD.note,
+    ]);
+  });
+
+  it("usage cost --by refuses an unknown grouping before asking the daemon", async () => {
+    seen.length = 0;
+    const { errors, exitCode } = await run(["cost", "--by", "team"], runningDeps(port));
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toMatch(/row, slice, mission, repo/);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("usage requests --json reads every page and prints all the records as one payload", async () => {
+    seen.length = 0;
+    const { logs } = await run(["requests", "--since", "2026-11-09T00:00:00Z", "--json"], runningDeps(port));
+    expect(seen.map((s) => s.url)).toEqual([
+      "/api/telemetry/usage/requests?since=2026-11-09T00%3A00%3A00Z",
+      "/api/telemetry/usage/requests?since=2026-11-09T00%3A00%3A00Z&after=1",
+    ]);
+    expect(JSON.parse(logs.join("\n"))).toEqual({ rows: REQUEST_ROWS });
   });
 
   describe.each(["top", "series"])("usage %s HTTP errors", (command) => {

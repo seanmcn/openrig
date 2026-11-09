@@ -9,6 +9,7 @@ import {
 } from "./runtime-adapter.js";
 import type { UsageSamplesStore, ProviderWindowSampleInput } from "./usage-samples-store.js";
 import type { ContextUsage } from "./types.js";
+import type { UsageRequestIngestor } from "./usage-request-ingest.js";
 import { getLatestStartupFailedEvent, hasClaudeResumeIdentityWork, readPendingStartupContext } from "./startup-orchestrator.js";
 import { claudeResumeRotation, SessionRegistry } from "./session-registry.js";
 
@@ -67,6 +68,12 @@ export class ContextMonitor {
   private providerWindowSampler: (() => ProviderWindowSampleInput[]) | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private activePoll: Promise<void> | null = null;
+  private usageRequests: Pick<UsageRequestIngestor, "ingest"> | null = null;
+
+  /** seanmcn/openrig#16: on each tick, read the requests appended to each Claude or Codex seat's transcript. */
+  setUsageRequestIngestor(ingestor: Pick<UsageRequestIngestor, "ingest"> | null): void {
+    this.usageRequests = ingestor;
+  }
 
   constructor(
     db: Database.Database,
@@ -133,6 +140,13 @@ export class ContextMonitor {
                 new Date().toISOString(),
               );
             } catch { /* series write must never break polling */ }
+          }
+          if (this.usageRequests && observed.transcriptPath && observed.sessionId
+            && (session.runtime === "claude-code" || session.runtime === "codex")) {
+            try {
+              this.usageRequests.ingest({ runtime: session.runtime, transcriptPath: observed.transcriptPath, seatSession: session.session_name,
+                nodeId: session.node_id, nativeSessionId: observed.sessionId }, new Date().toISOString());
+            } catch { /* per-request usage must never break polling */ }
           }
         } catch {
           observed = null;

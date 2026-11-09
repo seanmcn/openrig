@@ -1455,6 +1455,12 @@ your circumstances is configuration, and the ones that are not, another agent ca
   reports no cost. A missing figure reads missing, never $0, and no setting gates it. With
   `usage.pi_cost_facts` and `usage.pi_openrouter_charge` on (both off by default), Pi's estimate and
   OpenRouter's actual charge show beside each other, never added together.
+- **`rig usage cost --by row|slice|mission|repo [--since --until]`** — what a queue row, slice,
+  mission or repo cost, from per-request records: each Claude, Codex or Pi request is attributed to
+  the row its seat held at the time (its `worktree_path=` lines, and the slice proof's candidate sha,
+  break a tie), or counted on one unattributed line with the reason. The groups add up to the
+  seats' totals. `rig usage requests --json` gives every record in a range, with its paths and
+  attribution, to copy out before `retention.usage_samples_days` deletes it.
 - **`rig tui`** — the interactive view over rigs, pods, seats and specs. `rig` and `rig tui` open
   the status dashboard, not a conversation with an agent: talk to the operator through
   `rig terminal open saved:kernel --window`, which opens the dashboard and conversations together.

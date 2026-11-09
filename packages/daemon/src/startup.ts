@@ -2741,6 +2741,14 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       legacyProviderUsageDirectory(OPENRIG_HOME),
     ),
   ));
+  // seanmcn/openrig#16: per-request usage, attributed to the queue row it was spent on.
+  const { hasUsageRequestsTable, UsageRequestStore } = await import("./domain/usage-request-store.js");
+  if (hasUsageRequestsTable(db)) {
+    const { UsageRequestIngestor } = await import("./domain/usage-request-ingest.js");
+    const { daemonAttributionLookups } = await import("./domain/usage-request-lookups.js");
+    const usageRequestStore = new UsageRequestStore(db, daemonAttributionLookups(() => deps.sliceIndexer));
+    contextMonitor.setUsageRequestIngestor(new UsageRequestIngestor(db, usageRequestStore));
+  }
   deps.contextMonitor = contextMonitor;
   // OPR.0.4.3.14 — expose the SAME enforcer instance to routes for the manual
   // compaction trigger. Sharing one instance with ContextMonitor is what makes
