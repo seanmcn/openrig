@@ -23,7 +23,7 @@ afterEach(() => {
   root = undefined;
 });
 
-interface Fixture { home: string; bin: string; log: string }
+interface Fixture { home: string; bin: string; log: string; startupDelay: string }
 
 /** Build isolated hook state and controllable lookup scripts for timing and overlap cases. */
 function fixture(): Fixture {
@@ -56,7 +56,13 @@ echo "TRACE OK: work and topology"
 `);
   chmodSync(join(bin, "rig"), 0o755);
   chmodSync(join(bin, "trace"), 0o755);
-  return { home, bin, log };
+  // Preloaded into the hook with `--require`, this holds its start-up for STUB_STARTUP_MS. process.uptime() counts the
+  // hold, so a case can spend the hook's budget before any lookup runs, under no lookup's cap.
+  const startupDelay = join(bin, "startup-delay.cjs");
+  writeFileSync(startupDelay, `const ms = Number(process.env.STUB_STARTUP_MS);
+if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+`);
+  return { home, bin, log, startupDelay };
 }
 
 interface Run { killed: boolean; ms: number; stdout: string; stderr: string }
@@ -71,7 +77,7 @@ function hook(f: Fixture, event: string, session: string, extra: Record<string, 
       env: {
         PATH: `${f.bin}:${process.env.PATH}`, HOME: root!, OPENRIG_HOME: f.home, OPENRIG_SESSION_NAME: SEAT,
         PYTHON: join(f.bin, "trace"), OPENRIG_REFOCUS_WORK_NODE: f.home, OPENRIG_WORKSPACE_ROOT: f.home,
-        OPENRIG_TOPOLOGY_ROOT: f.home, ...extra,
+        OPENRIG_TOPOLOGY_ROOT: f.home, NODE_OPTIONS: `--require "${f.startupDelay}"`, ...extra,
       },
     });
     let stdout = "";
@@ -109,7 +115,8 @@ describe("refocus: the time budget", () => {
   it("delivers a slow but successful trace when a longer budget is selected", async () => {
     const f = fixture();
     await hook(f, "PostCompact", "s1");
-    const r = await hook(f, "UserPromptSubmit", "s1", { OPENRIG_REFOCUS_BUDGET_MS: "10000", STUB_TRACE_MS: "2500" });
+    // Past the default 2 s cap; a 20 s budget's 8.9 s cap leaves a loaded host room to start the trace.
+    const r = await hook(f, "UserPromptSubmit", "s1", { OPENRIG_REFOCUS_BUDGET_MS: "20000", STUB_TRACE_MS: "2500" });
     expect(r.killed).toBe(false);
     expect(context(r)).toContain("TRACE OK: work and topology");
     expect(context(r)).not.toContain("TRACE GAP");
@@ -150,21 +157,23 @@ describe("refocus: the time budget", () => {
   }, 20_000);
 
   it("with no budget selected, gives main's result: each lookup keeps its 2 s cap, unclipped, inside the 60 s bound", async () => {
-    // Lookups each under their own 2 s cap (with room for a slow runner's process start-up) that together pass the 4.5 s lookup budget: on
-    // main's 5 s registration this was killed; now it completes as main's code does.
+    // A hook that has passed the 4.5 s lookup budget, and main's 5 s registration (which killed it), while its lookups run,
+    // each well under its own 2 s cap. The start-up hold spends 4 s, so a lookup clipped to what's left of the budget
+    // would end as a gap; the lookups' 1.5 s of slack is room for a loaded host's process start-up and late wake-ups.
     const f = fixture();
-    const slow = { STUB_WHOAMI_MS: "1550", STUB_TRACE_MS: "1550", STUB_CONTEXT_MS: "1550", OPENRIG_REFOCUS_CONTENT_REF: "refocus/team.md",
-      OPENRIG_REFOCUS_WORK_NODE: "", OPENRIG_REFOCUS_TREES: "both" };
+    const slow = { STUB_STARTUP_MS: "4000", STUB_WHOAMI_MS: "500", STUB_TRACE_MS: "500", STUB_CONTEXT_MS: "500",
+      OPENRIG_REFOCUS_CONTENT_REF: "refocus/team.md", OPENRIG_REFOCUS_WORK_NODE: "", OPENRIG_REFOCUS_TREES: "both" };
     await hook(f, "PostCompact", "s1");
     const r = await hook(f, "UserPromptSubmit", "s1", slow);
     expect(r.killed).toBe(false);
     expect(context(r)).toContain("TRACE OK: work and topology");
     expect(context(r)).toContain("CONFIGURED REFOCUS CONTENT");
     expect(stateOf(f, "s1")).toMatchObject({ firedOn: "UserPromptSubmit" });
-    // A content-REF seat with a slow whoami gets main's full 2 s trace, not a shorter one (completes on main in ~2.9 s).
+    // A content-REF seat that is late to its trace gets main's full 2 s trace, not one shortened by the content lookup's
+    // reserve: by the trace, at most 0.3 s of the budget is left after that reserve.
     const g = fixture();
     await hook(g, "PostCompact", "s1");
-    const ref = await hook(g, "UserPromptSubmit", "s1", { STUB_WHOAMI_MS: "1000", STUB_TRACE_MS: "1500", STUB_CONTEXT_MS: "300",
+    const ref = await hook(g, "UserPromptSubmit", "s1", { STUB_STARTUP_MS: "2000", STUB_WHOAMI_MS: "200", STUB_TRACE_MS: "500", STUB_CONTEXT_MS: "300",
       OPENRIG_REFOCUS_CONTENT_REF: "refocus/team.md", OPENRIG_REFOCUS_WORK_NODE: "", OPENRIG_REFOCUS_TREES: "both" });
     expect(context(ref)).toContain("TRACE OK: work and topology");
     expect(context(ref)).not.toContain("TRACE GAP");
