@@ -74,13 +74,53 @@ New tiles keep their place when a seat's tmux session is replaced. They wait up
 to 30 seconds for the same session name and managed seat identity to return,
 then show the new session with the original read-only setting. This uses the
 shared tile command for Herdr, cmux, Rex and plain tmux, including SSH tiles.
-In-place handover and restart keep showing the same session.
+In-place handover and restart keep showing the same session. The exception is
+an SSH tile when the local tmux server is isolated: it runs
+`rig terminal attach` on the seat's host (`--read-only` for a read-only tile),
+which attaches with tmux once (`tmux attach -r` for a read-only tile). It
+doesn't follow a replaced session or a restarted tmux server; reopen the view.
 
-Detaching a tile you typed in returns it to showing the seat. A different seat
-under the old name is never followed. If no replacement returns in time, or a
+Writable tiles attach immediately, as in 0.7.10. Their visible terminal sizes
+the agent's PTY under tmux's normal client sizing policy, and resizing the
+terminal reflows new output. Read-only tiles remain observers: they neither
+resize nor type into another seat. An ordinary tmux detach ends the writable
+tile without stopping the agent. A replacement with a different managed seat
+identity is not followed. If no replacement returns in time, or a
 session has no managed identity, reopen the rig view with
 `rig terminal open rig:<name> --window` (or your explicit provider). Views
 opened before this change must be closed and reopened to get this behavior.
+
+As in published 0.7.10, Enter or Ctrl-C typed while a new writable tile is still
+attaching can close that viewer. The agent keeps running; reopen the view.
+Once attached, keys and paste use native tmux input handling.
+
+## Sizing and older views
+
+Use tmux's inherited `window-size latest` policy for the terminal most recently
+used to control sizing. OpenRig does not change a person's global tmux policy.
+A deliberate `window-size manual` setting remains an explicit fixed-size choice.
+OpenRig's temporary layout and readable-capture pins release by unsetting the
+window's local `window-size` option; they do not restore an old local override.
+With the last pin released, the window inherits the global policy again.
+
+Browser terminals do not pin the agent's PTY by default. For an explicit fixed
+90-by-27 browser terminal, use `rig config set terminal.fixed_geometry true`.
+Set it to `false` to return to the default. This applies to newly created browser
+brokers after existing browser subscribers disconnect; it does not configure
+native Herdr tiles. A temporary readable capture uses
+`rig capture <seat> --readable` or `--size <columns>x<rows>` and releases its pin
+when the capture finishes. It does not unset a manually fixed window it did not
+pin.
+
+Kept writable 0.7.8/0.7.9 viewers can retain an old `ignore-size` attach, and
+pre-reflow 0.7.11 viewers can retain the old mirrored display. Changing saved
+argv cannot change that running client. Close only the owned Herdr viewer pane
+and open a fresh view with `rig terminal open <view> --provider herdr`; the
+agent's tmux session and conversation keep running. For a retained `--follow`
+canvas, first select `--no-follow`, then close its owned viewer panes and open
+a fresh ordinary view. Continuing that old following canvas is not an automatic
+live-client migration. Existing 0.7.10 sizing clients and read-only viewers do
+not need this step.
 
 ## Desktop windows and previews
 
@@ -141,6 +181,18 @@ choosing the app whose window holds the caller's terminal when several show it.
 When no app can be chosen, or the app refuses the switch, the result names the
 session to select by hand. A Rex app accepts the switch only with Remote Control
 turned on in its Settings, under Rex Server.
+
+Each local seat's tile shows the seat's runtime (such as Claude Code or Codex) and
+its activity: working, idle, or blocked (with a permission kind for a permission
+prompt). The tile gets the current activity once it opens and each change after
+that, as `rig ps --nodes` resolves it. A Rex tile attached to the seat some other way, by
+hand or by Rex after an app restart, is caught up within about ten seconds, or within
+five minutes when no Rex tile was showing the seat before.
+Rarely, a report can arrive in the middle of tmux's own output and garble part of a
+Rex tile until it redraws. When OpenRig doesn't know a seat's activity,
+the tile shows none rather than idle. OpenRig writes these reports only to the
+tmux clients attached to the seat that identify themselves as Rex, so other
+terminals attached to the seat get nothing and no tmux option changes.
 
 The daemon finds `rex` in `$REX_BIN_DIR`, then on `PATH`, then inside the Rex
 app on macOS, and uses its own `REX_SERVER` when set. It never starts a Rex
@@ -326,20 +378,25 @@ labels are not that provenance. Other providers/platforms remain unsupported
 for ensure-viewer until qualified; ordinary open retains its existing behavior.
 
 A tmux window has one size, and a tmux client narrower than it sees only the
-left part of each line. So a tile shows its seat without attaching to it: about
-once a second it reads the seat's screen with `tmux capture-pane`, redraws only
-after tmux records new activity, and lets the tile's own terminal wrap each
-line. A tile narrower than the agent's window still shows whole lines, and
-showing a seat never changes its size. A rule drawn across the window is cut to
-the tile's width. A read-only tile only shows the seat. In a writable tile, the
-first thing you type or paste attaches the tile and goes through tmux as it
-would in any attached client: a paste arrives as one paste, and tmux's prefix
-works (prefix then `[` to scroll back, for example). The tile sizes the window
-while you use it, as any client you type in does; after 30 seconds without a
-key it detaches and shows the seat again. A tile that's only showing has no
-scrollback of its own. If the seat's tmux server restarts, a tile shows the
-seat again only when the same managed seat returns. The printed manual attach commands
-keep `-f ignore-size`. Observers of a Herdr terminal do not themselves resize
+left part of each line. So a read-only tile shows its seat without attaching to
+it: about once a second it reads the seat's screen with `tmux capture-pane`,
+redraws only after tmux records new activity, and lets the tile's own terminal
+wrap each line. A read-only tile narrower than the agent's window still shows
+whole lines, and showing a seat never changes its size. A rule drawn across the
+window is cut to the tile's width. A read-only tile has no scrollback of its
+own. (A read-only SSH tile on an isolated local server attaches read-only
+instead; see [Replacing a seat's session](#replacing-a-seats-session).) A
+writable tile attaches with plain tmux when it opens (see
+[Replacing a seat's session](#replacing-a-seats-session)): keys and paste go
+through tmux as in any attached client, tmux's prefix works (prefix then `[` to
+scroll back, for example), and the tile sizes the window while it's the active
+client. If the seat's tmux server restarts, a tile shows the seat again only
+when the same managed seat returns. The printed manual attach commands are
+`tmux attach -t` for a writable tile and `tmux attach -r -t` for a read-only
+one, with a local seat's tmux server (`-L <name>` or `-S <path>`) when it
+isn't tmux's default socket. For a seat on another host they run over `ssh -t`, and
+when the local tmux server is isolated, as `rig terminal attach` on that host.
+Observers of a Herdr terminal do not themselves resize
 it; a controlling browser can. No cross-version resize guarantee is implied.
 
 To type into a seat without changing its size, send the text through OpenRig

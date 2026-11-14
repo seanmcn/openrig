@@ -2,7 +2,7 @@ import { physicalSessionName } from "./session-registry.js";
 import { resolveNodeFile } from "./scope/node-file.js";
 import { belongsToProject } from "./workspace/project-catalog.js";
 import { inspectGraph } from "./workflow-reconciliation.js";
-import { createProofPolicyRead, readMissionReadiness, readProjectReadiness } from "./proof/judgments.js";
+import { createProofPolicyRead, readMissionReadiness, readProjectReadinessAsync } from "./proof/judgments.js";
 import { lifecycleObligations, requiredLifecycleSteps } from "./lifecycle-obligations.js";
 import { QueueWakeRepository } from "./queue-wake-repository.js";
 import { isTypedGateBlocker } from "./queue-repository.js";
@@ -18,6 +18,8 @@ import { isTypedGateBlocker } from "./queue-repository.js";
 //   "INDETERMINATE" (with a named basis), never idle/dead/done/false.
 // - THE LADDER IS THE SCHEMA: done-ness is five named rungs
 //   (locked/built/reviewed/folded/adopted); a single "done" boolean does not exist.
+//   What a team recorded about a slice (its `status:` word, a `merged:<pr>` report)
+//   is shown beside the rungs as labelled testimony and never sets one.
 // - PROJECTION, NOT AUTHORITY: every cell carries the row/artifact/command that
 //   makes it one command from source.
 //
@@ -38,7 +40,7 @@ import { promisify } from "node:util";
 import { parse as parseYaml } from "yaml";
 import type Database from "better-sqlite3";
 import { shellQuote } from "../adapters/shell-quote.js";
-import { parseFrontmatter } from "./slices/slice-indexer.js";
+import { parseFrontmatter, sliceStatusBucket } from "./slices/slice-indexer.js";
 import { lastMeaningfulTransition } from "./queue-waiting.js";
 import { derivePickup } from "./queue-pickup.js";
 
@@ -52,6 +54,7 @@ import { resolveLegacyTopologyRigsRoot } from "./user-settings/settings-store.js
 import { BUILD_INFO, type BuildInfo } from "../build-info.js";
 import { validateMissionComposition } from "./lifecycle-manifest.js";
 import { cooperativeReadFile, readRowsCooperatively } from "./execution-candidate-reader.js";
+import { recordSlowDiagnostic } from "./sync-site-wrap.js";
 
 export const INDETERMINATE = "INDETERMINATE" as const;
 export type Indeterminate = typeof INDETERMINATE;
@@ -746,6 +749,7 @@ async function gitAncestor(exec: ExecutionViewDeps["exec"], repoCtx: string, sha
 }
 
 export async function buildExecutionView(deps: ExecutionViewDeps, opts?: { mission?: string; rig?: string; project?: string }): Promise<Record<string, unknown>> {
+  const projectionStarted = performance.now();
   const now = deps.now ?? (() => new Date());
   const exec = deps.exec ?? defaultExec;
   const buildInfo = deps.buildInfo ?? BUILD_INFO;
@@ -804,23 +808,30 @@ export async function buildExecutionView(deps: ExecutionViewDeps, opts?: { missi
   // post_claim_motion feeds only derivePickup's legacy fallback, which pending and in-progress rows reach: a blocked row
   // returns parked and a closed row terminal before the count is read. Every row and body is still selected here (the
   // ladder, EC-3 and wave-map evidence need historical rows); only their unused history count is skipped.
-  const candidateSql = `SELECT qitem_id, source_session, destination_session, state, tags, body, summary, claimed_at,
+  const candidateSelect = `SELECT qitem_id, source_session, destination_session, state, tags, body, summary, claimed_at,
               last_heartbeat, blocked_on, ts_created, ts_updated,
               CASE WHEN queue_items.state IN ('pending','in-progress') THEN (SELECT COUNT(*) FROM queue_transitions t
                  WHERE t.qitem_id = queue_items.qitem_id
                    AND t.ts > queue_items.claimed_at
                    AND t.transition_note IS NOT 'claimed') ELSE 0 END AS post_claim_motion
-         FROM queue_items
-        WHERE (${missionWhere})`;
+         FROM queue_items`;
   const candidateBinds = missionLikes.flatMap((like) => [like, like]);
-  // On a WAL database file this full scan runs on its own readonly cursor and yields between slices so unrelated
-  // work can run; a native open, prepare or step can still block, since the slice budget is soft. It sees committed
-  // data as of its first step. Inside a transaction, or for a memory or non-WAL database, it stays a synchronous
-  // read on the main handle (no await on that branch).
+  // On a WAL database file this full scan runs on its own readonly connection in rowid windows, yielding between
+  // windows so unrelated work can run even when few rows match; the same filter runs inside each window, so the rows
+  // are the ones the single statement returns. A native open, a large row or a window's matching rows can still
+  // block for a while, since the window bound is soft. It sees committed data as of its first read. Inside a
+  // transaction, or for a memory or non-WAL database, it stays one synchronous read on the main handle (no await on
+  // that branch).
   const cooperativeFile = cooperativeReadFile(deps.db);
-  const candidateRows = cooperativeFile === null
-    ? deps.db.prepare(candidateSql).all(...candidateBinds) as QueueRowLite[]
-    : await readRowsCooperatively<QueueRowLite>(cooperativeFile, candidateSql, candidateBinds);
+  const candidateStarted = performance.now();
+  const candidateRead = cooperativeFile === null
+    ? null
+    : await readRowsCooperatively<QueueRowLite>(cooperativeFile, "queue_items",
+      `${candidateSelect} WHERE queue_items.rowid > ? AND queue_items.rowid <= ? AND (${missionWhere})`, candidateBinds);
+  const candidateRows = candidateRead
+    ? candidateRead.rows
+    : deps.db.prepare(`${candidateSelect} WHERE (${missionWhere})`).all(...candidateBinds) as QueueRowLite[];
+  const candidateMs = performance.now() - candidateStarted;
 
   const rows = candidateRows
     .filter(row => mission === INDETERMINATE || rowBindsToMission(row.tags, missionRefs))
@@ -986,7 +997,15 @@ export async function buildExecutionView(deps: ExecutionViewDeps, opts?: { missi
     const fm = facts.frontmatter;
     const locked: Rung = typeof fm["approved-spec-at"] === "string"
       ? { value: true, basis: `frontmatter approved-spec-at=${fm["approved-spec-at"]}` }
-      : { value: false, basis: "no approved-spec-at in frontmatter" };
+      : { value: false, basis: "no approved-spec-at in frontmatter; plan lock is a Part B step (rig scope slice approve --scope spec), so the default flow reads false here whatever the recorded status" };
+    // The team's own word for the slice: the node file's status:, as the scopes views read it (never PROGRESS.md),
+    // bucketed by the table `GET /api/slices` uses. Testimony: it never sets a rung or next-up.
+    const rawStatus = fm["status"];
+    const statusWord = typeof rawStatus === "string" && rawStatus.trim() ? rawStatus.trim() : null;
+    const nodeFile = path.basename(facts.specPath);
+    const recorded_status = statusWord
+      ? { word: statusWord, bucket: sliceStatusBucket(statusWord), basis: `${nodeFile} frontmatter status:, recorded by the team, not verified; it never sets a rung` }
+      : { word: null, bucket: null, basis: `no status: in ${nodeFile} frontmatter` };
     // built: latest candidate:<sha> tag on a row bound to this slice.
     const candRows = rows
       .filter((r) => sliceOfRow(r) === facts.id || sliceOfRow(r) === facts.dir)
@@ -1110,7 +1129,7 @@ export async function buildExecutionView(deps: ExecutionViewDeps, opts?: { missi
         : buildInfo.commit
           ? await gitAncestor(exec, repoCtx, builtResolved ?? candidateSha, buildInfo.commit)
           : { value: INDETERMINATE, basis: "daemon build stamp absent (dev run) — adopted rung underivable" };
-    return { slice_id: facts.id, dir: facts.dir, locked, built, reviewed, folded, adopted };
+    return { slice_id: facts.id, dir: facts.dir, recorded_status, locked, built, reviewed, folded, adopted };
   };
 
   const ladderCache = new Map<string, Record<string, unknown>>();
@@ -1124,6 +1143,20 @@ export async function buildExecutionView(deps: ExecutionViewDeps, opts?: { missi
   // so mutable refs (HEAD/main) are observed again on the next request.
   const q4: Record<string, unknown>[] = [];
   for (const s of slices) q4.push(await ladderFor(s));
+  // #2761: say once what the mission records for the ladder, so missing records never read as missing work.
+  const withCandidate = q4.filter((l) => (l["built"] as { candidate_sha?: unknown }).candidate_sha !== INDETERMINATE).length;
+  const withMergeReport = q4.filter((l) => !!(l["folded"] as { merge_report?: unknown }).merge_report).length;
+  const q4Records = {
+    slices: q4.length,
+    with_candidate: withCandidate,
+    with_merge_report: withMergeReport,
+    repo_context: repoCtx ?? INDETERMINATE,
+    basis: q4.length === 0
+      ? "no slices in this mission"
+      : withCandidate === 0
+        ? "no slice in this mission has a candidate:<sha> row, so built, reviewed and merged read INDETERMINATE: not recorded, which is not the same as not done. The default flow (sdlc-conventions.md Part A) doesn't record them; each slice's recorded_status is the team's own word"
+        : `${withCandidate} of ${q4.length} slices have a candidate:<sha> row; ${repoCtx ? `merged is tested in repo context ${repoCtx}` : "no row carries worktree_path= (EC-3), so merged can't be tested"}`,
+  };
 
   // ---- Q2 sequencing ----
   const q2 = [];
@@ -1333,11 +1366,11 @@ export async function buildExecutionView(deps: ExecutionViewDeps, opts?: { missi
     df_margin: dfMargin,
   };
 
-  return {
+  const view = {
     ...(opts?.project ? { project: opts.project, membership: "exact project:<id> queue tags and lifecycle identity; unscoped rows excluded" } : {}),
     view: "execution",
     readiness,
-    project_readiness: missionsRoot ? readProjectReadiness(missionsRoot, readPolicy) : null,
+    project_readiness: missionsRoot ? await readProjectReadinessAsync(missionsRoot, readPolicy) : null,
     // Authored guidance is carried verbatim in meaning, never parsed into edges or acceptance.
     planning_guidance: arrangement?.state === "valid" ? arrangement.guidance : [],
     mission,
@@ -1382,7 +1415,23 @@ export async function buildExecutionView(deps: ExecutionViewDeps, opts?: { missi
     q2_sequencing: q2,
     q3_care: q3,
     q4_ladder: q4,
+    q4_records: q4Records,
     q5_park: q5,
     q6_parallelism: q6,
   };
+  // Measurement only, for a slow projection: its elapsed time, the candidate read's elapsed time, and the candidate
+  // read's longest synchronous stretch, which a whole-view or awaited span cannot show. The main-handle read is one
+  // stretch. Counts and times only; no row content.
+  const projectionMs = performance.now() - projectionStarted;
+  recordSlowDiagnostic(projectionMs, {
+    schema: "openrig.execution-view/v1",
+    utc: new Date().toISOString(),
+    projectionMs,
+    candidateMs,
+    candidateRows: candidateRows.length,
+    candidateRead: candidateRead ? "windowed" : "main-handle",
+    candidateWindows: candidateRead?.windows ?? null,
+    candidateLongestStretchMs: candidateRead?.longestStretchMs ?? candidateMs,
+  });
+  return view;
 }

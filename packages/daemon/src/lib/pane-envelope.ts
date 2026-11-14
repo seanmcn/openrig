@@ -55,6 +55,9 @@ export interface EnvelopeMeta {
    *  names it with --reply-to, so the answer joins the Slack thread the message came from (#822
    *  records that thread on the row). ABSENT ⇒ the hint stays the plain new-conversation form. */
   replyToQitem?: string;
+  /** #2895 (a): false when the caller looked the sender up and `rig send` can't reach it (no session here). The reply
+   *  line then names no command, since the one it would name is known to fail. ABSENT or true ⇒ today's hint. */
+  senderReachable?: boolean;
 }
 
 /** The To-line projection + anti-storm scale (header-alone distinguishability, ruling pin 2). */
@@ -97,6 +100,10 @@ export function appendDeliveredSegment(envelope: string, deltaMs: number): strin
   return lines.join("\n") + rest;
 }
 
+/** The address OpenRig records an answer typed at this machine under (the daemon's UNATTRIBUTED_ACTOR). It names nobody,
+ *  and a row there asks no one (it waits on Steering and in the Feed, and OpenRig reports it as undeliverable), so a reply hint never points at it. */
+const UNATTRIBUTED_PERSON = "human@host";
+
 /** Wrap a tmux-pane body with the canonical From/To envelope. The
  *  recipient pane sees both the sender's identity and a reply hint.
  *  Cross-host nudges should NOT double-wrap: the remote rig wraps
@@ -131,10 +138,14 @@ export function wrapPaneEnvelope(
   }
   const reply = senderLabel.endsWith("@external")
     ? `↩ Reply if needed: rig queue create --destination ${senderLabel}${meta?.replyToQitem ? ` --human-intent update --reply-to ${meta.replyToQitem}` : ""} --summary "<one line>" --body "..." --verify`
+    : personAddress === UNATTRIBUTED_PERSON
+      ? `↩ ${senderLabel} names no person: a reply there asks no one. It waits on Steering and in the Feed, and OpenRig reports it as undeliverable. To ask the person back, use their registered address (rig gateway human list lists who's registered).`
     : isHumanSeatSessionRef(personAddress)
       ? `↩ Reply if needed: rig queue create --destination ${senderLabel} --human-intent update --summary "<one line>" --evidence-ref "<path>" --body "..." --verify`
       : isOpenRigSender(senderLabel)
         ? "↩ Sent by OpenRig itself, not by a seat. Act on the row it names."
-        : `↩ Reply: rig send ${senderLabel} "..."`;
+        : meta?.senderReachable === false
+          ? `↩ No reply by rig send: ${senderLabel} has no session.`
+          : `↩ Reply: rig send ${senderLabel} "..."`;
   return [...header, "---", body, "---", reply].join("\n");
 }

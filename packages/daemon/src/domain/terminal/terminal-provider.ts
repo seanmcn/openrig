@@ -38,6 +38,8 @@ export interface ComposedPane {
   attachArgv?: string[];
   /** True when the attach is view-only (`tmux attach -r`) — cross-rig / saved read-only. */
   readOnly: boolean;
+  /** Structured host id of a remote (ssh) tile; absent for a local seat. The seat name alone doesn't say which host. */
+  host?: string;
 }
 
 /** A seat that could not be tiled because it has no live/attachable session. Named, never dropped. */
@@ -128,6 +130,9 @@ export interface OpenViewResult {
   session?: string;
   ok: boolean;
   opened: string[];
+  /** Opened seats on another host, with that host: `opened` names them by seat alone. Always the complete list when
+   *  this service sends it (empty when every opened seat is local), so its absence means provenance is unknown. */
+  remote?: Array<{ seat: string; host: string }>;
   absent: AbsentSeat[];
   degraded: DegradedSeat[];
   pages: number;
@@ -139,6 +144,14 @@ export interface OpenViewResult {
   notes?: string[];
   /** The provider space the view opened in (a Rex session), for a caller that shows it. */
   space?: { id: string; label: string };
+  /** An existing workspace that still showed this view live was focused instead of opening tiles (`opened` is empty). */
+  reusedWorkspace?: { id: string; tabId: string; view: string };
+}
+
+/** How an open may treat a view that is already on screen. */
+export interface OpenViewOptions {
+  /** Reuse a workspace that still shows every tile of this view, attached, instead of opening a copy. */
+  reuseLive?: boolean;
 }
 
 /**
@@ -155,7 +168,7 @@ export interface TerminalProvider {
   readonly panesPerPage?: number;
   status(): Promise<ProviderStatus>;
   liveness(): Promise<ProviderLiveness>;
-  openView(view: ComposedView): Promise<OpenViewResult>;
+  openView(view: ComposedView, options?: OpenViewOptions): Promise<OpenViewResult>;
   ensureViewer?(key: ViewerKey, pane: ComposedPane, stillCurrent?: () => Promise<boolean>): Promise<ViewerResult>;
   lookupViewer?(key: ViewerKey, pane: ComposedPane): Promise<ViewerResult>;
   followView?(viewId: string, view: ComposedView | null, controls: FollowControls, stillCurrent: () => Promise<boolean>, membershipError?: string): Promise<OpenViewResult>;

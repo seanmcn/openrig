@@ -246,7 +246,18 @@ describe("rig mcp serve --http on the daemon's routes", () => {
     const own = (await asCarol("rig_queue_create", { destination: "impl@team", body: "hand this on" })).structured.qitemId as string;
     const handoff = await fetch(`${daemonUrl}/api/queue/${own}/handoff`, { method: "POST", headers: { "Content-Type": "application/json", "X-OpenRig-Session": "impl@team" }, body: JSON.stringify({ toSession: "qa@other", nudge: false }) });
     expect(handoff.status).toBe(201);
+    const next = ((await handoff.json()) as { created: { qitemId: string } }).created.qitemId;
     expect((await asCarol("rig_queue_show", { qitemId: own })).structured.successor).toEqual({ unknown: true, code: "out_of_scope" });
+    // Nor do the daemon's own successor fields, which it fills without a caller's scope (here: 21 successors, so the list
+    // is cut too).
+    const more = db.prepare(`INSERT INTO queue_items (qitem_id, ts_created, ts_updated, source_session, destination_session, state, priority, body, handed_off_from)
+      VALUES (?, '2026-10-26T00:00:00.000Z', '2026-10-26T00:00:00.000Z', 'impl@team', 'qa@other', 'pending', 'routine', 'x', ?)`);
+    for (let n = 0; n < 20; n++) more.run(`qitem-more-${n}`, own);
+    expect(await (await fetch(`${daemonUrl}/api/queue/${own}`)).json()).toMatchObject({ successorsTruncated: true, successors: expect.arrayContaining([expect.objectContaining({ qitemId: next })]) });
+    const handedOn = await asCarol("rig_queue_show", { qitemId: own });
+    for (const derived of ["successors", "successorsTruncated", "successorNote"]) expect(handedOn.structured.item).not.toHaveProperty(derived);
+    expect(handedOn.text).not.toContain(next);
+    expect(handedOn.text).not.toContain("qitem-more-");
 
     // Artifacts: a root outside the grant is out of reach, directly or through an item.
     fs.writeFileSync(path.join(shared, "report.md"), "ARTIFACT body");
@@ -327,7 +338,11 @@ describe("rig mcp serve --http on the daemon's routes", () => {
       expect(team.structured.hostedMembers).toEqual([{ session: "grok@team", roster: "team", capabilities: ["web research"],
         useWhen: "A question needs current web sources", caveat: "No terminal or files: answers in text only", pane: null, activity: "unknown",
         // Its last call is recorded; no ring was rung (nudge: false), so its last wake is unknown, never idle.
-        presence: { lastCallAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/), lastWake: null, lastWakeScope: "the latest ring among its 50 most recent rows" } }]);
+        presence: { lastCallAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/), lastWake: null, lastWakeScope: "the latest ring among its 50 most recent rows",
+          // Its own inbox reads over this server were recorded as check-ins on the daemon. Its entry states no cadence,
+          // so it reads unknown with that check-in, never on request.
+          checkIn: { status: "unknown", lastCheckInAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/), expectedMinutes: null, onRequest: false,
+            reason: "no check-in cadence declared" } } }]);
       expect(JSON.parse(fs.readFileSync(presenceFile, "utf8")).seats["grok@team"]).toMatchObject({ grant: "grok" });
       expect(fs.statSync(presenceFile).mode & 0o777).toBe(0o600);
       expect(fs.readFileSync(tokenFile, "utf8")).not.toContain("lastCallAt");

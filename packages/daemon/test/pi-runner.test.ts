@@ -199,7 +199,7 @@ describe("idle heartbeat", () => {
     expect(c.f.activity.filter(a => a.hookEvent !== "Stop")).toSatisfy((rest: Record<string, unknown>[]) => rest.every(a => !("livenessSeconds" in a)));
   });
 
-  it("is a Pi-only behaviour", () => {
+  it("is not an OMP behaviour", () => {
     const c = clocked("omp");
     ready(c.core);
     c.core.heartbeat();
@@ -210,7 +210,7 @@ describe("idle heartbeat", () => {
 // ── Streaming heartbeat: the runner contract's working beat (section 4), `active` / `liveness` ──
 
 describe("streaming heartbeat", () => {
-  function clocked(runtime?: "pi" | "omp") {
+  function clocked(runtime?: string) {
     const f = fakeIo();
     let t = Date.parse("2026-07-06T10:00:00Z");
     f.io.now = () => new Date(t).toISOString();
@@ -233,6 +233,18 @@ describe("streaming heartbeat", () => {
       turnId: "1", livenessSeconds: 30 })]);
     c.advance(10_000); c.core.heartbeat();
     expect(c.beats()).toHaveLength(2);
+  });
+
+  // A protocol: pi-rpc fork speaks Pi's protocol, so a silent turn keeps reading working, as an accepted turn.
+  it("gives a pi-rpc fork the same accepted turn and working beat as Pi", () => {
+    const c = clocked("omo");
+    ready(c.core);
+    c.core.handlePiLine(JSON.stringify({ type: "agent_start" }));
+    expect(c.f.activity).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hookEvent: "UserPromptSubmit", subtype: "accepted", turnId: "1", runtime: "omo" })]));
+    c.advance(10_000); c.core.heartbeat();
+    expect(c.beats()).toEqual([expect.objectContaining({ hookEvent: "active", subtype: "liveness", runtime: "omo",
+      turnId: "1", livenessSeconds: 30 })]);
   });
 
   // CodeRabbit 2336 — some turn paths omit agent_start; turn_start alone opens the turn.
@@ -279,7 +291,7 @@ describe("streaming heartbeat", () => {
     expect(c.beats()).toEqual([]);
   });
 
-  it("is a Pi-only behaviour", () => {
+  it("is not an OMP behaviour", () => {
     const c = clocked("omp");
     ready(c.core);
     c.core.handlePiLine(JSON.stringify({ type: "agent_start" }));
@@ -1187,6 +1199,42 @@ describe("--thinking in the runner command and the pi child argv", () => {
     const parsed = parseRunnerArgs(cmd.split(" ").slice(2).map((w) => w.replace(/^'|'$/g, "")));
     expect(buildPiChildArgs({ ...childBase, thinking: parsed.thinking })).toEqual(expect.arrayContaining(["--thinking", "medium"]));
   });
+
+  it("parseRunnerArgs round-trips the command's --command and custom runtime", () => {
+    const cmd = buildPiRunnerCommand({ ...cmdBase, runtime: "omo", command: "omo", thinking: "high" });
+    const argv = cmd.match(/(?:'[^']*'|[^\s]+)/g)!.slice(2).map((arg) => arg.replace(/^'|'$/g, ""));
+    const parsed = parseRunnerArgs(argv);
+    expect(parsed.command).toBe("omo");
+    expect(parsed.runtime).toBe("omo");
+    expect(parsed.thinking).toBe("high");
+    expect(parsed.trust).toBe("approve");
+  });
+
+  it("custom protocol: pi-rpc harness reporting no sessionFile raises attention (runtime_error)", () => {
+    const f = fakeIo();
+    const core = new RunnerCore(
+      f.io,
+      { sessionName: "omo-worker@rig", nodeId: "omo-node", launchId: "launch-1" },
+      { runtime: "omo" },
+    );
+    core.start();
+    core.handlePiLine(JSON.stringify({
+      type: "response",
+      id: "pi-runner-get-state",
+      data: { sessionId: "omo-session-1", sessionFile: null },
+    }));
+
+    expect(f.lines.join("\n")).toMatch(/\[omo-runner\] ERROR rpc get_state returned no session file/);
+    expect(f.lines.join("\n")).not.toContain("READY");
+    expect(f.sidecars).toEqual([]);
+    expect(f.activity).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        hookEvent: "Notification",
+        subtype: "runtime_error",
+        runtime: "omo",
+      }),
+    ]));
+  });
 });
 
 // ── FR-5: prepareRunnerSidecar + cursor seed (guard re-verdict fold) ─────────
@@ -1351,4 +1399,25 @@ it("marks an ambiguous Mistral refusal only after its retries are exhausted", ()
   f.core.handlePiLine(JSON.stringify({ type: "auto_retry_end", success: false, finalError: error }));
   f.core.handlePiLine(JSON.stringify({ type: "agent_end" }));
   expect(f.activity.at(-1)).toMatchObject({ hookEvent: "at_limit" });
+});
+
+describe("managed run identity retries", () => {
+  it("retries a pending run identity until Core confirms persistence, then stops", async () => {
+    const f = fakeIo();
+    let persisted = false;
+    f.io.postActivity = vi.fn(async (payload) => { f.activity.push(payload); return persisted ? { tokenPersisted: true } : null; });
+    const core = new RunnerCore(f.io, { sessionName: SESSION, launchId: "actual-run", runId: "actual-run" });
+    core.start();
+    core.handlePiLine(JSON.stringify({ type: "response", id: "pi-runner-get-state", data: { sessionFile: SESSION_FILE, sessionId: "native" } }));
+    await new Promise(resolve => setImmediate(resolve));
+    const count = () => f.activity.filter(p => p.eventFamily === "session_identity").length;
+    const initial = count();
+    persisted = true;
+    core.retrySessionIdentity();
+    await new Promise(resolve => setImmediate(resolve));
+    expect(count()).toBe(initial + 1);
+    expect(f.activity.filter(p => p.eventFamily === "session_identity").at(-1)).toMatchObject({ runId: "actual-run" });
+    core.retrySessionIdentity();
+    expect(count()).toBe(initial + 1);
+  });
 });

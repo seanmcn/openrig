@@ -11,7 +11,15 @@ describe("wrapSendBody — pre-release CLI/daemon Item 2 (email-style envelope)"
     expect(out).toContain('↩ Reply: rig send driver-3@my-rig "..."');
   });
 
-  it.each(["human@kernel", "human@host", "human-alice@kernel", "human-alice@host"])(
+  // An answer typed at this machine is recorded as human@host, which names nobody: a reply there asks no one, waits on
+  // Steering and in the Feed, and OpenRig reports it as undeliverable, so its reply hint says so and points to the person's registered address.
+  it.each(["human@host", "human@host@host-origin"])("never points %s's reply at the unattributed address", (sender) => {
+    const last = wrapSendBody(sender, "driver@rig", "Answered.").split("\n").at(-1);
+    expect(last).toBe(`↩ ${sender} names no person: a reply there asks no one. It waits on Steering and in the Feed, and OpenRig reports it as undeliverable. To ask the person back, use their registered address (rig gateway human list lists who's registered).`);
+    expect(last).not.toContain("rig queue create");
+  });
+
+  it.each(["human@kernel", "human-alice@kernel", "human-alice@host"])(
     "gives %s a queue update reply with the existing human-route fields",
     (sender) => {
       const body = "Please check this.\nKeep the actor unchanged.";
@@ -142,6 +150,22 @@ describe("wrapSendBody — pre-release CLI/daemon Item 2 (email-style envelope)"
   it("(g) stamps the sender's short generation (first8) as a Sent:-line suffix", () => {
     const out = wrapSendBody("a@r", "b@r", "hi", { stampISO: "2026-08-06T17:42:09Z", genUuid: GEN });
     expect(out).toContain("Sent: 08-06 17:42Z · gen a1b2c3d4");
+  });
+
+  // ── #2895 (a): a sender that `rig send` can't reach gets no `rig send` reply line ──
+  // MIRROR of packages/daemon/test/pane-envelope.test.ts against wrapPaneEnvelope (byte-identity contract).
+  it("#2895 (a): senderReachable false replaces the rig send line with a plain note; absent or true keeps it", () => {
+    const meta = { stampISO: "2026-08-06T17:42:09Z" };
+    expect(wrapSendBody("planner@global", "b@r", "hi", { ...meta, senderReachable: false }))
+      .toBe("From: planner@global\nTo: b@r\nSent: 08-06 17:42Z\n---\nhi\n---\n↩ No reply by rig send: planner@global has no session.");
+    expect(wrapSendBody("a@r", "b@r", "hi", { ...meta, senderReachable: true })).toBe(wrapSendBody("a@r", "b@r", "hi", meta));
+    expect(wrapSendBody("a@r", "b@r", "hi", meta).split("\n").at(-1)).toBe('↩ Reply: rig send a@r "..."');
+  });
+
+  it("#2895 (a): senderReachable false leaves the external reply line alone", () => {
+    for (const sender of ["alex@external"]) {
+      expect(wrapSendBody(sender, "b@r", "hi", { senderReachable: false })).toBe(wrapSendBody(sender, "b@r", "hi"));
+    }
   });
 
   it("(g) byte-exact full envelope with gen (cross-package parity anchor)", () => {

@@ -24,6 +24,7 @@ import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { openTerminalWindow, type WindowDeps } from "../terminal-window.js";
 import { assertLocalTmux, attachTmux, isLocalTmuxHost, readTmuxServerArgs, type TmuxAttachment } from "../tmux-attachment.js";
+import { attentionLines, checkSeatAttention } from "../seat-attention.js";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -73,6 +74,8 @@ export interface OpenViewResult {
   session?: string;
   ok: boolean;
   opened: string[];
+  /** Opened seats on another host, with that host: complete when sent, so its absence (an older daemon) means unknown. */
+  remote?: Array<{ seat: string; host: string }>;
   absent: { seat: string; host: string | null; reason: string }[];
   degraded: { seat: string; host: string; reason: string; code?: "pane_unconfirmed" }[];
   pages: number;
@@ -107,7 +110,7 @@ function printResult(json: boolean, body: unknown, status: number): void {
 }
 
 /** Human-format the honest-partial open result (opened/absent/degraded, each named). */
-function humanOpen(r: OpenViewResult): string {
+function humanOpen(r: OpenViewResult, viaWindow: boolean): string {
   const lines: string[] = [];
   const tiled = r.opened.length;
   const target = r.session === undefined ? r.provider : `${r.provider} session ${JSON.stringify(r.session)}`;
@@ -115,7 +118,7 @@ function humanOpen(r: OpenViewResult): string {
     r.code === "terminal_window_failed" && r.error
       ? r.error
       : r.ok && r.reusedWorkspace
-        ? `Terminal window requested. Reused ${target} workspace ${r.reusedWorkspace.id} for view ${JSON.stringify(r.reusedWorkspace.view)}.`
+        ? `${viaWindow ? "Terminal window requested. " : ""}Reused ${target} workspace ${r.reusedWorkspace.id} for view ${JSON.stringify(r.reusedWorkspace.view)}.`
         : tiled > 0
           ? `${r.window ? "Terminal window requested. " : ""}Prepared ${tiled} tile(s) in ${target}${r.pages > 1 ? ` across ${r.pages} page(s)` : ""}.`
           : `No tiles ${r.degraded.some(d => d.code === "pane_unconfirmed") ? "confirmed" : "opened"} in ${target}.`,
@@ -135,12 +138,29 @@ function humanOpen(r: OpenViewResult): string {
   return lines.join("\n");
 }
 
+/** Names the opened seats that need attention (a startup prompt, a sign-in, a failed start), so a held seat doesn't
+ *  read as an open that failed for no reason. Local seats are checked on this daemon; a seat on another host, or one
+ *  whose host the result doesn't say, is reported unchecked, never matched to a local seat of the same name. */
+async function withHeldSeats(client: DaemonClient, r: OpenViewResult): Promise<OpenViewResult> {
+  const seats = [...new Set([...r.opened, ...(r.following?.tiles.map(t => t.seat) ?? [])])];
+  if (!Array.isArray(r.remote)) {
+    // An older daemon names opened seats without saying which are remote: none can be checked locally by name.
+    const lines = seats.length ? attentionLines({ attention: [], unknown: seats.map(seat => ({ seat, why: "the daemon didn't say which host each tile is on" })) }, "tile") : [];
+    return lines.length ? { ...r, notes: [...(r.notes ?? []), ...lines] } : r;
+  }
+  const remote = new Map(r.remote.map(({ seat, host }) => [seat, host]));
+  const check = await checkSeatAttention(client, seats.filter(seat => !remote.has(seat)));
+  for (const [seat, host] of remote) check.unknown.push({ seat, why: `it's on host ${host}, which this daemon doesn't check` });
+  const lines = attentionLines(check, "tile");
+  return lines.length ? { ...r, notes: [...(r.notes ?? []), ...lines] } : r;
+}
+
 /** A successful existing-workspace selection also needs no new panes. */
-function printOpen(json: boolean, r: OpenViewResult, status: number): void {
+function printOpen(json: boolean, r: OpenViewResult, status: number, viaWindow = false): void {
   if (json) {
     console.log(JSON.stringify(r));
   } else {
-    console.log(humanOpen(r));
+    console.log(humanOpen(r, viaWindow));
   }
   if (status >= 400 || (r.following ? !r.ok : r.opened.length === 0 && !(r.ok && r.reusedWorkspace))) {
     process.exitCode = status >= 500 ? 2 : 1;
@@ -162,7 +182,7 @@ export function terminalCommand(depsOverride?: TerminalDeps): Command {
     .command("open")
     .argument("<view>", "a rig name, pod:<rig>/<pod>, seat:<rig>/<logical-id>, mission:<id>, slice:<id>, qitem:<id> (current local obligation owners), or a saved-view id")
     .description("Open a desktop terminal showing the view's live agents as interactive tiles")
-    .option("--provider <name>", "herdr, herdr-app, cmux or rex: open in the running provider without a desktop window; each open adds a new workspace (inside Herdr, --window reuses a matching one), and herdr-app opens a Rig view in the herdr-app window this runs in, which must be answering; tmux requires --window. Inside Rex, the default opens in Rex")
+    .option("--provider <name>", "herdr, herdr-app, cmux or rex: open in the running provider without a desktop window; herdr focuses a workspace that still shows this view with live attachments, otherwise each open adds a new workspace, and herdr-app opens a Rig view in the herdr-app window this runs in, which must be answering; tmux requires --window. Inside Rex, the default opens in Rex")
     .option("--session <name>", "Herdr session on the daemon's host; --session default selects Herdr's default session")
     .option("--window", "Open a new desktop terminal tab/window (the default when --provider is omitted outside herdr-app); inside a herdr-app terminal --window still asks for a desktop window, and plain open reuses herdr-app")
     .option("--app-home <dir>", "herdr-app: the client to open in (default: herdr-app's own home, from HERDR_APP_HOME or ~/.config/herdr-app)")
@@ -221,7 +241,7 @@ export function terminalCommand(depsOverride?: TerminalDeps): Command {
             herdrApp: { appHome },
             ...(opts.expectedPlan !== undefined ? { expectedPlan: opts.expectedPlan } : {}) }, { timeoutMs: TERMINAL_OPEN_TIMEOUT_MS });
           if (!Array.isArray(res.data?.opened)) { printResult(opts.json ?? false, res.data, res.status); return; }
-          printOpen(opts.json ?? false, res.data, res.status);
+          printOpen(opts.json ?? false, await withHeldSeats(client, res.data), res.status);
           return;
         }
         // Herdr's control socket can answer with no desktop client attached.
@@ -231,7 +251,7 @@ export function terminalCommand(depsOverride?: TerminalDeps): Command {
           const windowProvider = opts.provider?.trim() === "herdr-app" ? undefined : opts.provider;
           const result = await openTerminalWindow(client, view, windowProvider, deps.windowDeps, opts.expectedPlan, session, following);
           const out = ambientFallbackNote ? { ...result, notes: [...(result.notes ?? []), ambientFallbackNote] } : result;
-          printOpen(opts.json ?? false, out, 200);
+          printOpen(opts.json ?? false, await withHeldSeats(client, out), 200, true);
           return;
         }
         let expectedPlan = opts.expectedPlan;
@@ -245,7 +265,9 @@ export function terminalCommand(depsOverride?: TerminalDeps): Command {
           }
           expectedPlan = preview.data.planId;
         }
-        const body = { view, ...(opts.provider ? { provider: opts.provider } : {}), ...(session !== undefined ? { session } : {}), ...(expectedPlan !== undefined ? { expectedPlan } : {}) };
+        // Herdr focuses a workspace that still shows this view live instead of adding a copy (#3052).
+        const reuseLive = !following && opts.provider?.trim() === "herdr";
+        const body = { view, ...(opts.provider ? { provider: opts.provider } : {}), ...(session !== undefined ? { session } : {}), ...(expectedPlan !== undefined ? { expectedPlan } : {}), ...(reuseLive ? { reuseLive } : {}) };
         const res = await client.post<OpenViewResult>(following ? "/api/terminal/follow" : "/api/terminal/open",
           { ...body, ...following }, { timeoutMs: TERMINAL_OPEN_TIMEOUT_MS, ...(following ? { headers: terminalAuthHeaders() } : {}) });
         if (session !== undefined && res.status < 400 && res.data?.session !== session) {
@@ -256,7 +278,7 @@ export function terminalCommand(depsOverride?: TerminalDeps): Command {
           printResult(opts.json ?? false, res.data, res.status);
           return;
         }
-        printOpen(opts.json ?? false, res.data, res.status);
+        printOpen(opts.json ?? false, await withHeldSeats(client, res.data), res.status);
       });
     });
 

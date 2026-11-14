@@ -25,7 +25,7 @@ const DEFAULT_EXTRA_INSTRUCTION_FILE_SUFFIX = "compaction/post-compact-extra.md"
 
 function clearEnv(): () => void {
   const keys = [
-    "OPENRIG_PORT", "OPENRIG_HOST", "OPENRIG_DB", "OPENRIG_TMUX_SERVER", "OPENRIG_DAEMON_DB_CONFLICT",
+    "OPENRIG_PORT", "OPENRIG_HOST", "OPENRIG_DB", "OPENRIG_TMUX_SERVER", "OPENRIG_TERMINAL_FIXED_GEOMETRY", "OPENRIG_DAEMON_DB_CONFLICT",
     "OPENRIG_TRANSCRIPTS_ENABLED", "OPENRIG_TRANSCRIPTS_PATH",
     "OPENRIG_TRANSCRIPTS_LINES", "OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS",
     "OPENRIG_WORKSPACE_ROOT", "OPENRIG_WORKSPACE_SLICES_ROOT",
@@ -99,6 +99,15 @@ describe("SettingsStore (User Settings v0)", () => {
     expect(() => store.set("terminal.tmux_server", "isolate")).toThrow('must be "inherit" or "isolated"');
   });
 
+  it("web fixed geometry is off by default and explicitly selectable through file or environment", () => {
+    const store = new SettingsStore(configPath);
+    expect(store.resolveOne("terminal.fixed_geometry")).toMatchObject({ value: false, source: "default" });
+    store.set("terminal.fixed_geometry", "true");
+    expect(store.resolveOne("terminal.fixed_geometry")).toMatchObject({ value: true, source: "file" });
+    process.env.OPENRIG_TERMINAL_FIXED_GEOMETRY = "false";
+    expect(store.resolveOne("terminal.fixed_geometry")).toMatchObject({ value: false, source: "env" });
+  });
+
   it("SETTINGS_VALID_KEYS matches the documented settings key set", () => {
     expect([...SETTINGS_VALID_KEYS]).toEqual([
       "daemon.port", "daemon.host", "daemon.db_conflict", "daemon.seat_poll_interval_ms",
@@ -170,11 +179,13 @@ describe("SettingsStore (User Settings v0)", () => {
       "terminal.status_bar",
       "terminal.tmux_server",
       "terminal.history_limit",
+      "terminal.fixed_geometry",
       "terminal.inherit_tmux_environment",
       // Slice 15 (OPR.0.7.0.15) — compact command-output defaults switch.
       "output.compact",
       // Slice 15 P5 — the whoami peer bound under output.compact.
       "output.whoami_peers",
+      "output.rebuild_recaps",
       // Slice 01 (OPR.0.7.0.1) — Codex usage windows switch.
       "provider.usage_windows",
       // The providers chosen at rig setup --providers, which kernel boot honours.
@@ -315,6 +326,19 @@ describe("SettingsStore (User Settings v0)", () => {
     expect(store.resolveOne("output.whoami_peers")).toMatchObject({ value: 12, source: "file" });
     for (const raw of ["0", "-3", "2.5", "8junk", "many"]) {
       expect(() => store.set("output.whoami_peers", raw)).toThrow(/output\.whoami_peers/);
+    }
+  });
+
+  it("configures the optional rebuild recap preview without limiting retained history", () => {
+    const store = new SettingsStore(configPath);
+    expect(store.resolveOne("output.rebuild_recaps")).toMatchObject({ value: 3, source: "default" });
+    store.set("output.rebuild_recaps", "0");
+    expect(store.resolveOne("output.rebuild_recaps")).toMatchObject({ value: 0, source: "file" });
+    vi.stubEnv("OPENRIG_OUTPUT_REBUILD_RECAPS", "2");
+    expect(store.resolveOne("output.rebuild_recaps")).toMatchObject({ value: 2, source: "env" });
+    vi.unstubAllEnvs();
+    for (const raw of ["-1", "2.5", "2recaps", "9007199254740992"]) {
+      expect(() => store.set("output.rebuild_recaps", raw)).toThrow(/output\.rebuild_recaps/);
     }
   });
 
@@ -596,6 +620,19 @@ describe("SettingsStore (User Settings v0)", () => {
       expect(store.resolveOne("daemon.port").source).toBe("default");
       const warns = stderrSpy.mock.calls.map((c) => String(c[0]));
       expect(warns.some((w) => w.includes("file value for daemon.port rejected"))).toBe(true);
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it("a non-string provider.selected in config.json falls back to the default with a warning", () => {
+    writeFileSync(configPath, JSON.stringify({ provider: { selected: ["claude"] } }));
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const store = new SettingsStore(configPath);
+      expect(store.resolveOne("provider.selected")).toMatchObject({ value: "", source: "default" });
+      const warns = stderrSpy.mock.calls.map((c) => String(c[0]));
+      expect(warns.some((w) => w.includes("file value for provider.selected rejected"))).toBe(true);
     } finally {
       stderrSpy.mockRestore();
     }
