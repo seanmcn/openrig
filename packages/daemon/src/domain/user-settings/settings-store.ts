@@ -181,8 +181,15 @@ export const SETTINGS_VALID_KEYS = [
   // opt_in_sessions is a comma-separated list of canonical session names that
   // get a job while the mode is off. Existing registered jobs always survive
   // and keep being maintained regardless of either key.
+  //
+  // pending_rows_sessions is a comma-separated list of canonical session names
+  // whose job watches every row pending for the seat, not only gate rows. A
+  // seat named there gets a job as if it were in opt_in_sessions. It is for a
+  // coordinating seat whose ordinary rows nothing else re-wakes: a create-time
+  // wake that lands mid-turn is never re-sent, and the stuck sweep waits an hour.
   "policies.idle_gate_qitem.auto_register",
   "policies.idle_gate_qitem.opt_in_sessions",
+  "policies.idle_gate_qitem.pending_rows_sessions",
   "snapshots.periodic.enabled",
   "snapshots.periodic.interval_seconds",
   "snapshots.periodic.retention_keep",
@@ -337,6 +344,7 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   "policies.idle_gate_qitem.active_wake_interval_seconds": { primary: "OPENRIG_POLICIES_IDLE_GATE_QITEM_ACTIVE_WAKE_INTERVAL_SECONDS" },
   "policies.idle_gate_qitem.auto_register": { primary: "OPENRIG_POLICIES_IDLE_GATE_QITEM_AUTO_REGISTER" },
   "policies.idle_gate_qitem.opt_in_sessions": { primary: "OPENRIG_POLICIES_IDLE_GATE_QITEM_OPT_IN_SESSIONS" },
+  "policies.idle_gate_qitem.pending_rows_sessions": { primary: "OPENRIG_POLICIES_IDLE_GATE_QITEM_PENDING_ROWS_SESSIONS" },
   "snapshots.periodic.enabled": { primary: "OPENRIG_SNAPSHOTS_PERIODIC_ENABLED" },
   "snapshots.periodic.interval_seconds": { primary: "OPENRIG_SNAPSHOTS_PERIODIC_INTERVAL_SECONDS" },
   "snapshots.periodic.retention_keep": { primary: "OPENRIG_SNAPSHOTS_PERIODIC_RETENTION_KEEP" },
@@ -448,6 +456,7 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "policies.idle_gate_qitem.active_wake_interval_seconds": ["policies", "idleGateQitem", "activeWakeIntervalSeconds"],
   "policies.idle_gate_qitem.auto_register": ["policies", "idleGateQitem", "autoRegister"],
   "policies.idle_gate_qitem.opt_in_sessions": ["policies", "idleGateQitem", "optInSessions"],
+  "policies.idle_gate_qitem.pending_rows_sessions": ["policies", "idleGateQitem", "pendingRowsSessions"],
   "snapshots.periodic.enabled": ["snapshots", "periodic", "enabled"],
   "snapshots.periodic.interval_seconds": ["snapshots", "periodic", "intervalSeconds"],
   "snapshots.periodic.retention_keep": ["snapshots", "periodic", "retentionKeep"],
@@ -765,6 +774,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     // B6 — NOT default-on by founder ruling; "all" is the explicit fleet opt-in.
     case "policies.idle_gate_qitem.auto_register": return "off";
     case "policies.idle_gate_qitem.opt_in_sessions": return "";
+    case "policies.idle_gate_qitem.pending_rows_sessions": return "";
     case "snapshots.periodic.enabled": return true;
     case "snapshots.periodic.interval_seconds": return 300;
     case "snapshots.periodic.retention_keep": return 10;

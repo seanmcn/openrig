@@ -172,6 +172,7 @@ describe("SettingsStore (User Settings v0)", () => {
       // B6 founder ruling — auto-registration is not default-on.
       "policies.idle_gate_qitem.auto_register",
       "policies.idle_gate_qitem.opt_in_sessions",
+      "policies.idle_gate_qitem.pending_rows_sessions",
       "snapshots.periodic.enabled",
       "snapshots.periodic.interval_seconds",
       "snapshots.periodic.retention_keep",

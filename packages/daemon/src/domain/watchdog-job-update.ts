@@ -1,6 +1,7 @@
 import { parse as parseYaml, parseDocument } from "yaml";
 import { artifactPoolListProblem, type ArtifactPoolSpec } from "./policies/artifact-pool-helpers.js";
 import { edgeArtifactRequiredSpecProblem } from "./policies/edge-artifact-required.js";
+import { idleGateQitemSpecProblem } from "./policies/idle-gate-qitem.js";
 import { periodicReminderSpecProblem } from "./policies/periodic-reminder.js";
 import { workflowKeepaliveSpecProblem } from "./policies/workflow-keepalive.js";
 import { isQueueWait, retuneQueueWait } from "./queue-wait-backoff.js";
@@ -47,6 +48,7 @@ const SPEC_PROBLEMS: Record<string, (spec: ReturnType<typeof parseWatchdogSpec>)
   "edge-artifact-required": (spec) => edgeArtifactRequiredSpecProblem(spec)?.message,
   "artifact-pool-ready": (spec) => artifactPoolListProblem(spec.context["pools"] as ArtifactPoolSpec | ArtifactPoolSpec[] | undefined),
   "workflow-keepalive": (spec) => workflowKeepaliveSpecProblem(spec)?.message,
+  "idle-gate-qitem": (spec) => idleGateQitemSpecProblem(spec.context),
 };
 function specProblem(policy: string, parsed: ReturnType<typeof parseWatchdogSpec>): string | null {
   return SPEC_PROBLEMS[policy]?.(parsed) ?? null;
