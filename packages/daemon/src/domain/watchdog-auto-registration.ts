@@ -113,8 +113,21 @@ export class WatchdogAutoRegistration {
     // accepted " all " silently behaving as "off" is a config that lies.
     const mode = String(this.deps.settingsStore.resolveOne("policies.idle_gate_qitem.auto_register").value ?? "off").trim();
     if (mode === "all") return true;
-    const optIn = String(this.deps.settingsStore.resolveOne("policies.idle_gate_qitem.opt_in_sessions").value ?? "");
-    return optIn.split(",").map((s) => s.trim()).filter(Boolean).includes(sessionName);
+    return this.sessionsIn("policies.idle_gate_qitem.opt_in_sessions").includes(sessionName)
+      || this.watchesPendingRows(sessionName);
+  }
+
+  /**
+   * A seat named in `pending_rows_sessions` is woken for every row pending for it, not only gate
+   * rows, and gets a job as though it were also opted in.
+   */
+  private watchesPendingRows(sessionName: string): boolean {
+    return this.sessionsIn("policies.idle_gate_qitem.pending_rows_sessions").includes(sessionName);
+  }
+
+  private sessionsIn(key: "policies.idle_gate_qitem.opt_in_sessions" | "policies.idle_gate_qitem.pending_rows_sessions"): string[] {
+    const raw = String(this.deps.settingsStore.resolveOne(key).value ?? "");
+    return raw.split(",").map((s) => s.trim()).filter(Boolean);
   }
 
   ensure(nodeId: string, sessionName: string): WatchdogJob | null {
@@ -133,7 +146,7 @@ export class WatchdogAutoRegistration {
     return this.deps.jobsRepo.ensureAutoRegistration(
       {
         policy: POLICY,
-        specYaml: this.generatedSpec(sessionName, cadence.scan, cadence.activeWake),
+        specYaml: this.generatedSpec(sessionName, cadence.scan, cadence.activeWake, this.watchesPendingRows(sessionName)),
         targetSession: sessionName,
         intervalSeconds: cadence.scan,
         scanIntervalSeconds: cadence.scan,
@@ -237,12 +250,13 @@ export class WatchdogAutoRegistration {
     };
   }
 
-  private generatedSpec(sessionName: string, scan: number, activeWake: number): string {
+  private generatedSpec(sessionName: string, scan: number, activeWake: number, pendingRows: boolean): string {
     return `policy: ${POLICY}\n` +
       `generated_by: openrig-daemon\n` +
       `target:\n  session: ${sessionName}\n` +
       `interval_seconds: ${scan}\n` +
       `scan_interval_seconds: ${scan}\n` +
-      `active_wake_interval_seconds: ${activeWake}\n`;
+      `active_wake_interval_seconds: ${activeWake}\n` +
+      (pendingRows ? `context:\n  rows: pending\n` : "");
   }
 }

@@ -184,6 +184,7 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       // B6 founder ruling — auto-registration is not default-on.
       "policies.idle_gate_qitem.auto_register",
       "policies.idle_gate_qitem.opt_in_sessions",
+      "policies.idle_gate_qitem.pending_rows_sessions",
       "snapshots.periodic.enabled",
       "snapshots.periodic.interval_seconds",
       "snapshots.periodic.retention_keep",
@@ -310,13 +311,14 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
   it("W2c idle-gate-qitem cadence defaults to scan=60 and active-wake=900; B6 gate defaults off/empty", () => {
     const config = new ConfigStore(configPath).resolve();
     const idleGate = (config.policies as typeof config.policies & {
-      idleGateQitem?: { scanIntervalSeconds: number; activeWakeIntervalSeconds: number; autoRegister: string; optInSessions: string };
+      idleGateQitem?: { scanIntervalSeconds: number; activeWakeIntervalSeconds: number; autoRegister: string; optInSessions: string; pendingRowsSessions: string };
     }).idleGateQitem;
     expect(idleGate).toEqual({
       scanIntervalSeconds: 60,
       activeWakeIntervalSeconds: 900,
       autoRegister: "off",
       optInSessions: "",
+      pendingRowsSessions: "",
     });
   });
 
