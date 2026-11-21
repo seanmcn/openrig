@@ -16,6 +16,8 @@ import { ContextUsageStore } from "../src/domain/context-usage-store.js";
 import { ContextMonitor } from "../src/domain/context-monitor.js";
 import { UsageSamplesStore, type ProviderWindowSampleInput } from "../src/domain/usage-samples-store.js";
 import { telemetryRoutes } from "../src/routes/telemetry.js";
+import { UsageRequestStore } from "../src/domain/usage-request-store.js";
+import { UsageRequestIngestor } from "../src/domain/usage-request-ingest.js";
 import type { ReadinessResult } from "../src/domain/runtime-adapter.js";
 
 describe("51-08 A1 wiring — the series accrues from the real poll tick", () => {
@@ -111,6 +113,22 @@ describe("51-08 A1 wiring — the series accrues from the real poll tick", () =>
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("seanmcn/openrig#16: the tick reads the seat's Claude transcript into per-request records served by the route", async () => {
+    const transcript = join(tmpDir, "native-7.jsonl");
+    writeFileSync(transcript, JSON.stringify({ type: "assistant", timestamp: "2026-08-07T09:00:05.000Z", requestId: "req_1",
+      cwd: "/w/app", message: { model: "claude-x", id: "msg_1", content: [{ type: "tool_use", name: "Read", input: { file_path: "/w/app/a.ts" } }],
+        usage: { input_tokens: 4, output_tokens: 9, cache_read_input_tokens: 100, cache_creation_input_tokens: 7 } } }) + "\n");
+    writeSidecar({ session_id: "native-7", transcript_path: transcript });
+    monitor.setUsageRequestIngestor(new UsageRequestIngestor(db, new UsageRequestStore(db)));
+    await monitor.pollOnce();
+    await monitor.pollOnce();
+    const response = await telemetryRoutes({ db: () => db }).request("/usage/requests");
+    const body = await response.json() as { rows: Array<Record<string, unknown>> };
+    expect(body.rows).toHaveLength(1);
+    expect(body.rows[0]).toMatchObject({ runtime: "claude-code", seatSession: sessionName, nativeSessionId: "native-7",
+      requestKey: "req_1", paths: ["/w/app/a.ts"], attribution: { status: "unattributed", basis: "no_rows_held" } });
   });
 
   it("two polls over an UNCHANGED sidecar append ONE context row; an advanced sidecar appends the second", async () => {

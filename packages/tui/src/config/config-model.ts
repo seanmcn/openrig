@@ -92,6 +92,7 @@ const LABELS: Record<string, string> = {
   "policies.idle_gate_qitem.scan_interval_seconds": "Idle-gate scan interval",
   "policies.idle_gate_qitem.active_wake_interval_seconds": "Active-wake interval",
   "policies.idle_gate_qitem.opt_in_sessions": "Opt-in sessions",
+  "policies.idle_gate_qitem.pending_rows_sessions": "Pending-row sessions",
   "slack.credentialFile": "Credential file reference", "slack.botToken": "Bot credential",
   "slack.appToken": "Socket Mode credential", "slack.requiredScopes": "Required scopes",
   "slack.minimumLevelThatPosts": "Minimum posting level", "slack.minimumLevelThatInterrupts": "Minimum interrupt level",

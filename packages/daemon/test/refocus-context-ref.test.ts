@@ -118,6 +118,8 @@ exit 0
     RIG_WHOAMI_STDOUT: options.whoamiStdout,
     RIG_WHOAMI_STATUS: options.whoamiStatus === undefined ? undefined : String(options.whoamiStatus),
     PYTHON_ARGV_LOG: pythonLog,
+    // These cases test content and state, not subprocess deadlines.
+    OPENRIG_REFOCUS_BUDGET_MS: "52000",
     OPENRIG_REFOCUS_NOW: "1",
     OPENRIG_REFOCUS_TREES: "work",
     OPENRIG_WORKSPACE_ROOT: home,
@@ -266,6 +268,7 @@ describe("openrig-core refocus hook — S18 trigger and event contract", () => {
       transcriptContent: "threshold crossed",
       extraEnv: {
         OPENRIG_REFOCUS_ENABLED: "0",
+        OPENRIG_REFOCUS_BUDGET_MS: "52000",
         OPENRIG_REFOCUS_BYTES: "1",
       },
     });
