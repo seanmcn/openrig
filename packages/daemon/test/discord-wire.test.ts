@@ -1,7 +1,7 @@
 // The Discord connector end to end: the real queue, delivery rules, thread routing, Mission Control resolution and
 // recovery, with Discord's REST API and Gateway in memory (issue #15's acceptance list).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDb } from "../src/db/connection.js";
@@ -20,6 +20,7 @@ import { DISCORD_DEFAULT_CONFIG, saveDiscordConfig } from "../src/domain/gateway
 import { DISCORD_BUTTON_STYLE } from "../src/domain/gateway/discord/render.js";
 import { DiscordIdMap } from "../src/domain/gateway/discord/discord-ids.js";
 import { HumanQuietStore } from "../src/domain/gateway/human-quiet-windows.js";
+import { ChannelCoverageStore, slackTimestamp } from "../src/domain/gateway/slack/state-store.js";
 import { BOT_ID, FakeDiscord, type FakeMessage } from "./helpers/fake-discord.js";
 
 const CH = "700000000000000001";
@@ -203,5 +204,36 @@ describe("Discord connector at parity with Slack", () => {
     await flush();
     await build(); // the daemon starts again: recovery runs on connect
     await vi.waitFor(() => expect(rows().some((q) => q.destinationSession === seat && (q.body ?? "").includes("eu-west, please."))).toBe(true), { timeout: 5000 });
+  });
+
+  it("a post outside any thread, sent while the daemon was down, is recovered after restart and reaches the inbound destination", async () => {
+    // Channel recovery covers the channel from its first scan on; wait for that before the daemon stops.
+    const coverageFile = join(home, "state", "slack-channel-coverage.json");
+    await vi.waitFor(() => expect(existsSync(coverageFile)).toBe(true), { timeout: 5000 });
+    wire.stop(); // the daemon stops
+    // The daemon was down for a while: coverage ends a minute ago, and the post landed 30 seconds ago, outside the
+    // five-second settle margin recovery leaves for history visibility lag.
+    const minuteAgo = slackTimestamp(BigInt(Date.now() - 60_000) * 1000n);
+    new ChannelCoverageStore(coverageFile).save(CH, { coverageStart: minuteAgo, coveredThrough: minuteAgo, seedBasis: "feature-adoption" });
+    discord.clock = Date.now() - 30_000;
+    discord.write(CH, "Is the depot still there?"); // a top-level post; no Gateway event reaches anyone
+    await flush();
+    await build(); // recovery runs on connect
+    await vi.waitFor(() => expect(rows().some((q) => q.destinationSession === "operator-agent@kernel" && (q.body ?? "").includes("Is the depot still there?"))).toBe(true), { timeout: 5000 });
+  });
+
+  it("a tap on one question, then a typed reply in the thread, settles the ask with both", async () => {
+    const { qitemId } = await repo.create({ humanAlert: true, sourceSession: seat, destinationSession: human, summary: "Two quick questions",
+      body: "Pick one for each.", evidenceRef: "/proof.md", nudge: false, humanIntent: "decision", humanQuestions: questions });
+    await deliver(qitemId);
+    const root = rootOf(qitemId);
+    socket().dispatch("INTERACTION_CREATE", { id: "920000000000000091", token: "t91", type: 3, guild_id: GUILD, channel_id: CH,
+      data: { custom_id: "or-q:db|or-opt:pg", component_type: 2 }, message: { id: root.id }, member: { user: { id: PERSON } } });
+    await vi.waitFor(() => expect(repo.getById(qitemId)?.humanAnswers).toEqual({ db: "pg" }));
+    say(root.id, "Not this week, next.");
+    await vi.waitFor(() => expect(repo.getById(qitemId)?.state).toBe("done"));
+    const answers = repo.getById(qitemId)?.humanAnswers as Record<string, string>;
+    expect(answers.db).toBe("pg");
+    expect(JSON.stringify(answers)).toContain("Not this week, next.");
   });
 });
