@@ -193,6 +193,8 @@ export async function seedBacklogAsHistory(opts: {
    *  failed or never finished. An alert whose row has since closed is dropped; the rest post. */
   buffer?: Pick<import("../dispatch-buffer.js").DispatchBuffer, "pending">;
   log?: (msg: string) => void;
+  /** The chat connector being enabled, named in the status line. Slack by default. */
+  connectorKind?: "slack" | "discord";
 }): Promise<{ seeded: number; onlineStatus: string }> {
   const alerts = await opts.queue.listHumanAlerts(opts.filter);
   const already = opts.seen.load();
@@ -202,7 +204,7 @@ export async function seedBacklogAsHistory(opts: {
   const retainedNote = retained > 0
     ? ` ${retained} earlier undelivered post(s) wait in the replay buffer: an alert whose row has since closed is dropped; the rest post (open rows' alerts, decision-resolved notices, digests).`
     : "";
-  const onlineStatus = `slack outbound ENABLED at enable-time: ${seeded} pre-existing alert(s) seeded as history (not reposted); only alerts created after this point will deliver.${retainedNote}`;
+  const onlineStatus = `${opts.connectorKind ?? "slack"} outbound ENABLED at enable-time: ${seeded} pre-existing alert(s) seeded as history (not reposted); only alerts created after this point will deliver.${retainedNote}`;
   opts.log?.(onlineStatus);
   return { seeded, onlineStatus };
 }
