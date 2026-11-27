@@ -19,6 +19,7 @@ import type { QueueRepository } from "../../queue-repository.js";
 import type { DispatchResult } from "../dispatcher.js";
 import { DispatchBuffer } from "../dispatch-buffer.js";
 import type { LoadResult } from "../human-registry.js";
+import type { ChatConnectorKind } from "../chat-connector.js";
 import { sharedChannelAddresses } from "../participants.js";
 import { makeQueuePorts } from "./queue-access.js";
 import { SeenStore } from "./state-store.js";
@@ -172,23 +173,27 @@ export interface PostOpenAsksInput {
   waitMs?: number;
   /** The seen store's path (the gateway's, by default). */
   seenPath?: string;
+  /** The chat connector the asks are shown again on: only people whose primary binding is that kind have asks here.
+   *  Slack by default. */
+  connectorKind?: ChatConnectorKind;
 }
 
 /** Show the open asks again: reconcile each, offer the ones enable seeded, then report every ask's outcome. */
 export async function postOpenAsks(input: PostOpenAsksInput): Promise<PostOpenAsksResult> {
   const { queueRepo } = input;
-  const loadSlackHumanRegistry = (): LoadResult => {
+  const connectorKind = input.connectorKind ?? "slack";
+  const loadConnectorHumanRegistry = (): LoadResult => {
     const loaded = input.loadHumanRegistry();
     if (!loaded.ok) return loaded;
     return {
       ...loaded,
       entities: loaded.entities.filter((entity) =>
-        entity.connectorBindings.some((b) => b.role === "primary" && b.kind === "slack"),
+        entity.connectorBindings.some((b) => b.role === "primary" && b.kind === connectorKind),
       ),
     };
   };
   const ports = makeQueuePorts(queueRepo, {
-    loadHumanRegistry: loadSlackHumanRegistry,
+    loadHumanRegistry: loadConnectorHumanRegistry,
     sharedChannels: () => sharedChannelAddresses(input.home),
   });
   const episodes = await ports.listOpenAsks({ minimumLevel: input.minimumLevelThatPosts });

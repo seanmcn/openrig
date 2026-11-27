@@ -442,6 +442,7 @@ export function gatewayRoutes(opts: {
           const value = await postOpenAsks({
             queueRepo, home, loadHumanRegistry: () => registry, minimumLevelThatPosts: loadConfig().minimumLevelThatPosts,
             dispatch: (op, ref, payload, o) => subsystem.dispatch!(op, ref, payload, o), actor: actor.session, waitMs: waitSeconds * 1000,
+            connectorKind: kind,
           });
           return { value, after: { enabled: loadConfig().enabled, active: subsystem.status().state === "active" },
             effect: value.asks.some((a) => a.reshown) ? "applied" as const : "no-op" as const };
@@ -503,6 +504,7 @@ export function gatewayRoutes(opts: {
                 }),
                 seen,
                 filter: { minimumLevel: cfg.minimumLevelThatPosts },
+                connectorKind: kind,
                 buffer: {
                   pending: () =>
                     dispatchBuffer.pending().filter((d) => {

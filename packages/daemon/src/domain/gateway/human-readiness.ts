@@ -105,7 +105,8 @@ export async function resolveHumanDeliveryReadiness(
       nextAction: null,
     };
   }
-  const configured = primary.kind === "slack" && input.botToken !== null && input.config.channel !== null;
+  const kind = input.connectorKind ?? "slack";
+  const configured = primary.kind === kind && input.botToken !== null && input.config.channel !== null;
   const enabled = input.config.enabled;
   const active = enabled && input.gatewayState === "active";
   const result = (
@@ -114,7 +115,6 @@ export async function resolveHumanDeliveryReadiness(
     nextAction: string | null,
   ): HumanDeliveryReadiness => ({ state, configured, enabled, active, ready: state === "ready", ...base, reason, nextAction });
 
-  const kind = input.connectorKind ?? "slack";
   if (primary.kind !== kind) return result("not-ready", `primary connector kind '${primary.kind}' is unsupported${primary.kind === "slack" || primary.kind === "discord" ? ` (this machine runs ${kind})` : ""}`, "rig gateway human show " + input.human.entityId + " --json");
   if (!input.botToken || !input.config.channel) return result("not-ready", "connector configuration is incomplete (bot token or channel missing)", `rig ${kind} status --json`);
   if (!enabled) return result("not-ready", "connector is configured but disabled", `rig ${kind} enable`);

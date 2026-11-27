@@ -87,6 +87,23 @@ describe("registered human primary-binding readiness", () => {
     expect(verifyScopes).not.toHaveBeenCalled();
   });
 
+  it("counts a Discord-bound person as configured on a machine running Discord", async () => {
+    const discordHuman: HumanFragment = { ...human, connectorBindings: [{ kind: "discord", connectorRef: "main", secretsRef: "env:DISCORD_BOT_TOKEN", role: "primary", handle: "244" }] };
+    const result = await resolveHumanDeliveryReadiness({ human: discordHuman, config: { ...config, enabled: false }, gatewayState: "active", botToken: "secret", connectorKind: "discord" }, {
+      verifyScopes: async () => ({ ok: true, granted: [], missing: [] }),
+      verifyMembership: async () => ({ ok: true, isMember: true }),
+    });
+    expect(result).toMatchObject({ state: "not-ready", configured: true, enabled: false, nextAction: "rig discord enable" });
+  });
+
+  it("doesn't count a Slack-bound person as configured on a machine running Discord", async () => {
+    const result = await resolveHumanDeliveryReadiness({ human, config, gatewayState: "active", botToken: "secret", connectorKind: "discord" }, {
+      verifyScopes: async () => ({ ok: true, granted: [], missing: [] }),
+      verifyMembership: async () => ({ ok: true, isMember: true }),
+    });
+    expect(result).toMatchObject({ state: "not-ready", configured: false });
+  });
+
   it("keeps an unreachable live probe indeterminate instead of calling it ready or failed", async () => {
     const result = await resolveHumanDeliveryReadiness({ human, config, gatewayState: "active", botToken: "secret" }, {
       verifyScopes: async () => ({ ok: false, granted: [], missing: config.requiredScopes, error: "request timed out" }),
