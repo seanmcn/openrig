@@ -157,6 +157,13 @@ describe("rig slack post-open-asks through the gateway", () => {
     expect((await runAs(registry, "discord")).asks, "a Slack-bound person has no asks on Discord").toHaveLength(0);
   });
 
+  it("enable's status line names the connector being enabled", async () => {
+    const seed = (connectorKind?: "slack" | "discord") => seedBacklogAsHistory({ queue: makeQueuePorts(repo, { loadHumanRegistry: () => registry }),
+      seen: new SeenStore(seenPath()), filter: { minimumLevel: "NOTICE" }, ...(connectorKind ? { connectorKind } : {}) });
+    expect((await seed()).onlineStatus).toMatch(/^slack outbound ENABLED at enable-time: /);
+    expect((await seed("discord")).onlineStatus).toMatch(/^discord outbound ENABLED at enable-time: /);
+  });
+
   it("running it again, or the same decision replayed, posts nothing more and reports already posted", async () => {
     const row = await park();
     await enable();
