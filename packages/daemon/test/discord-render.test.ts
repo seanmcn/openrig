@@ -50,6 +50,15 @@ describe("rendering a Slack post for Discord", () => {
     expect(r.messages[0]!.content).toContain(reconcileToken("dec-1"));
   });
 
+  it("shows the reconcile marker only as small spoilered text, once", () => {
+    const marker = reconcileToken("dec-1");
+    const root = renderSlackPost(ask()).messages[0]!.content;
+    expect(root).toContain(`-# ||${marker}||`);
+    expect(root.split(marker)).toHaveLength(2);
+    const plain = renderSlackPost({ text: `Update preference recorded\n${marker}` }).messages[0]!.content;
+    expect(plain).toBe(`Update preference recorded\n-# ||${marker}||`);
+  });
+
   it("an update fits one message and opens no thread", () => {
     const r = renderSlackPost(buildOutboundMessage({ qitemId: "u1", summary: "Deployed", body: "All *good*", ownerNotificationKind: "update" }, { sourceLabel: "openrig" }));
     expect(r.opensThread).toBe(false);
