@@ -51,6 +51,9 @@ type Block = { type?: string; block_id?: string; text?: { type?: string; text?: 
 
 const HINTS = new Set([TYPED_REPLY_HINT, CHANNEL_REPLY_HINT, HUMAN_REQUIRED_REPLY_HINT]);
 const MARKER = /\(or-mark:[^)\s]*\)/;
+/** The reconcile marker as Discord shows it: small text behind a spoiler, so it reads as a faint bar. The history scan
+ *  matches the marker inside the content, so the spoiler bars don't hide it from the scan. */
+const shownMarker = (marker: string) => `-# ||${marker}||`;
 const EMOJI: Record<string, string> = { rotating_light: "🚨", warning: "⚠️", white_check_mark: "✅", x: "❌", bell: "🔔" };
 
 const unescape = (s: string) => s.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
@@ -188,7 +191,8 @@ export function renderSlackPost(post: { text: string; blocks?: unknown[] }): Ren
   const allowRest = { parse: [] as string[], users: [] as string[] };
 
   if (!blocks.length) {
-    const pieces = splitContent([mrkdwnToDiscord(post.text ?? ""), marker && !(post.text ?? "").includes(marker) ? `-# ${marker}` : ""].filter(Boolean).join("\n"));
+    const body = marker ? (post.text ?? "").replace(marker, "").replace(/\n+$/, "") : (post.text ?? "");
+    const pieces = splitContent([mrkdwnToDiscord(body), marker ? shownMarker(marker) : ""].filter(Boolean).join("\n"));
     return {
       messages: pieces.map((content, i) => ({ content, allowed_mentions: i === 0 ? allowRoot : allowRest })),
       opensThread: pieces.length > 1,
@@ -235,17 +239,17 @@ export function renderSlackPost(post: { text: string; blocks?: unknown[] }): Ren
   const restPieces = splitContent(rest.join("\n"));
   const headText = head.join("\n");
   let headMessages: DiscordMessageBody[];
-  if (ask && headText.length + (marker ? marker.length + 4 : 0) > DISCORD_CONTENT_CAP) {
+  if (ask && headText.length + (marker ? shownMarker(marker).length + 1 : 0) > DISCORD_CONTENT_CAP) {
     // An ask's questions and buttons stay on its root, whatever their length: the root's text rides in an embed (4096
     // characters), and the content keeps the mention, which only content pings, and the reconcile marker.
     if (headText.length > EMBED_DESCRIPTION_CAP) {
       throw new DiscordRenderError(`the ask's headline and questions are ${headText.length} characters; Discord shows at most ${EMBED_DESCRIPTION_CAP} on one message`);
     }
-    const content = [mentions.map((id) => `<@${id}>`).join(" "), marker ? `-# ${marker}` : ""].filter(Boolean).join("\n") || "​";
+    const content = [mentions.map((id) => `<@${id}>`).join(" "), marker ? shownMarker(marker) : ""].filter(Boolean).join("\n") || "​";
     headMessages = [{ content, embeds: [{ description: headText }], allowed_mentions: allowRoot, ...(rows.length ? { components: rows } : {}) }];
   } else {
     // Only a non-ask's text is split across messages; an ask's root fits here, buttons and all.
-    const headPieces = splitContent([headText, marker ? `-# ${marker}` : ""].filter(Boolean).join("\n"));
+    const headPieces = splitContent([headText, marker ? shownMarker(marker) : ""].filter(Boolean).join("\n"));
     headMessages = headPieces.map((content, i) => ({
       content,
       allowed_mentions: i === 0 ? allowRoot : allowRest,
