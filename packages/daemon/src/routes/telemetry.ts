@@ -8,6 +8,10 @@ import { queryUsageSeries, computeTopBurn, computeCostView } from "../domain/usa
 import { readTelemetryPage, TelemetryInputError, type TelemetrySource, type TelemetryStream } from "../domain/finite-telemetry.js";
 import { timeBoundAdvisory } from "../domain/time-bound-advisory.js";
 import { SQL_LIMIT_BOUND } from "./query-limit.js";
+import { COST_BY_GROUPINGS, computeCostBy, hasUsageRequestsTable, UsageRequestStore, type CostBy } from "../domain/usage-request-store.js";
+
+/** A page of per-request records when the caller names no limit. */
+const USAGE_REQUESTS_PAGE = 1000;
 
 export interface TelemetryRouteDeps {
   db: () => Database;
@@ -64,9 +68,41 @@ export function telemetryRoutes(deps: TelemetryRouteDeps): Hono {
   });
 
   // OPR.0.7.0.2: what each seat's harness reports about cost, labelled; absent and stale stay visible.
+  // seanmcn/openrig#16: with `by`, cost and tokens per row, slice, mission or repo from the per-request records.
   app.get("/usage/cost", (c) => {
+    const by = c.req.query("by");
+    if (by !== undefined) {
+      if (!(COST_BY_GROUPINGS as readonly string[]).includes(by)) {
+        return c.json({ error: `unknown grouping "${by}" — known: ${COST_BY_GROUPINGS.join(", ")}` }, 400);
+      }
+      const db = deps.db();
+      if (!hasUsageRequestsTable(db)) return c.json({ error: "per-request usage isn't recorded by this daemon" }, 503);
+      return c.json(computeCostBy(db, { by: by as CostBy, since: c.req.query("since") || undefined, until: c.req.query("until") || undefined }));
+    }
     const seat = c.req.query("seat") || undefined;
     return c.json(computeCostView(deps.db(), { nowIso: now(), seatSession: seat }));
+  });
+
+  // seanmcn/openrig#16: every per-request record in [since, until), with its inputs and attribution, in id order. Page
+  // with `after=<nextAfter>` until nextAfter is null, so a reader can copy them out before retention deletes them.
+  app.get("/usage/requests", (c) => {
+    const limitRaw = c.req.query("limit");
+    const afterRaw = c.req.query("after");
+    const limit = limitRaw === undefined ? USAGE_REQUESTS_PAGE : Number(limitRaw);
+    if (!Number.isInteger(limit) || limit < 1 || limit >= SQL_LIMIT_BOUND) {
+      return c.json({ error: `invalid limit "${limitRaw}" — must be a positive whole number` }, 400);
+    }
+    const afterId = afterRaw === undefined || afterRaw === "" ? undefined : Number(afterRaw);
+    if (afterId !== undefined && (!Number.isInteger(afterId) || afterId < 0)) {
+      return c.json({ error: `invalid after "${afterRaw}" — pass the previous page's nextAfter` }, 400);
+    }
+    const db = deps.db();
+    if (!hasUsageRequestsTable(db)) return c.json({ error: "per-request usage isn't recorded by this daemon" }, 503);
+    const rows = new UsageRequestStore(db).list({
+      since: c.req.query("since") || undefined, until: c.req.query("until") || undefined,
+      seatSession: c.req.query("seat") || undefined, afterId, limit,
+    });
+    return c.json({ rows, nextAfter: rows.length === limit ? rows[rows.length - 1]!.id : null });
   });
 
   app.get("/usage/top", (c) => {

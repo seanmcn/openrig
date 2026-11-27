@@ -9,8 +9,7 @@ import type { AuthorityReference } from "./health-diagnosis.js";
 import type { HealthCheckpointSource } from "./health-checkpoints.js";
 import { parseAddress, resolveAddress } from "./markdown-address.js";
 import { loadHumanRegistry } from "./gateway/human-registry.js";
-import { loadConfig } from "./gateway/slack/config.js";
-import { resolveSecret } from "./gateway/slack/secrets.js";
+import { activeChatConnector } from "./gateway/chat-connector.js";
 import { resolveHumanDeliveryReadiness } from "./gateway/human-readiness.js";
 
 /** Local evidence files only. Unsupported addresses retain unavailable truth.
@@ -129,13 +128,13 @@ export async function healthHumanReadiness(home: string, address: string, gatewa
   const registry = loadHumanRegistry(home);
   const human = registry.ok ? registry.entities.find((h) => h.address === address) : undefined;
   if (!human) return { ready: false, reason: "registered human primary connector unavailable" };
-  const cfg = loadConfig(home);
-  const token = resolveSecret("SLACK_BOT_TOKEN", { envFile: cfg.secretsEnvFile ?? undefined });
+  const connector = activeChatConnector(home);
   const readiness = await resolveHumanDeliveryReadiness({
     human,
-    config: cfg,
+    config: connector.config,
+    connectorKind: connector.kind,
     gatewayState: gatewayActive ? "active" : "inactive",
-    botToken: token,
+    botToken: connector.botToken,
   });
   return { ready: readiness.ready, reason: readiness.reason };
 }

@@ -70,7 +70,7 @@ recovery cockpit; it is not automatically a reason to exit before rendering.
 | Find owned work or communicate | `rig queue`, `rig send`, `rig stream`, `rig chatroom`, `rig walk`; [coordination source map](architecture/coordination-primitive.md). |
 | Work with projects, missions, slices, and proof | `rig scope`, `rig proof`, `rig workflow`; [project workspace](../reference/project-workspace.md) and [SDLC conventions](../reference/sdlc-conventions.md). |
 | Read/project context and skills | `rig context`, `rig skill`, `rig package`; [context source map](architecture/plugin-agent-image-context-pack.md). |
-| Connect another host or human channel | `rig host`, `rig gateway`, `rig slack`; [Slack setup](../reference/slack-app-setup.md). |
+| Connect another host or human channel | `rig host`, `rig gateway`, `rig slack`, `rig discord`; [Slack setup](../reference/slack-app-setup.md), [Discord setup](../reference/discord-app-setup.md). |
 | Check, share, or start a rig bundle | `rig bundle check`, `rig bundle`, `rig up <GitHub folder link>`; [packaging source map](architecture/packaging-bootstrap-bundles.md). |
 | Find a specialist seat across rigs and hosts | `rig roster` (read-only). |
 | Read event, queue-transition, and tenure telemetry | `rig telemetry`. |
@@ -915,7 +915,8 @@ It drives the maintained OpenShell reference; see the [OpenShell example](../ref
 |---|---|---|
 | `rig usage` | — | — |
 | `rig usage top` | — | `--window <duration>`<br>`--top <n>`<br>`--json` |
-| `rig usage cost` | — | `--seat <session>`<br>`--json` |
+| `rig usage cost` | — | `--seat <session>`<br>`--json`<br>`--by <grouping>`<br>`--since <iso>`<br>`--until <iso>` |
+| `rig usage requests` | — | `--seat <session>`<br>`--since <iso>`<br>`--until <iso>`<br>`--json` |
 | `rig usage series` | — | `--seat <session>`<br>`--lane <lane>`<br>`--since <iso>`<br>`--until <iso>`<br>`--limit <n>`<br>`--json` |
 
 ### telemetry

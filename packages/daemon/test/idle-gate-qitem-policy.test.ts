@@ -13,7 +13,7 @@ import type { ArbitratedSeatState } from "../src/domain/activity-taxonomy.js";
 import { WatchdogJobsRepository } from "../src/domain/watchdog-jobs-repository.js";
 import { WatchdogHistoryLog } from "../src/domain/watchdog-history-log.js";
 import { WatchdogPolicyEngine, type DeliveryFn } from "../src/domain/watchdog-policy-engine.js";
-import { makeIdleGateQitemPolicy } from "../src/domain/policies/idle-gate-qitem.js";
+import { idleGateQitemSpecProblem, makeIdleGateQitemPolicy } from "../src/domain/policies/idle-gate-qitem.js";
 import type { PolicyJob } from "../src/domain/policies/types.js";
 
 const NOW = new Date("2026-07-03T12:00:00.000Z");
@@ -597,6 +597,97 @@ describe("idle-gate-qitem policy (OPR.0.4.3.16)", () => {
       expect(historyLog.listForJob(registered.jobId)).toHaveLength(0);
       expect(skippedEvents).toHaveLength(0);
       expect(deliveries).toHaveLength(0);
+    });
+  });
+  describe("pending-rows mode (context rows: pending)", () => {
+    const pendingJob = (context: Record<string, unknown> = { rows: "pending" }) => makeJob({ context });
+    const policyAtNow = () => makeIdleGateQitemPolicy({ db, seatActivity, now: () => NOW });
+
+    function seedRow(id: string, opts: { state?: string; updatedAt?: string; tags?: string[] | null } = {}): void {
+      const updatedAt = opts.updatedAt ?? "2026-07-03T07:00:00Z";
+      db.prepare(
+        `INSERT INTO queue_items (qitem_id, ts_created, ts_updated, source_session, destination_session, state, priority, tier, tags, body)
+         VALUES (?, '2026-07-03T07:00:00Z', ?, 'src@r', ?, ?, 'routine', NULL, ?, 'route this')`,
+      ).run(id, updatedAt, SEAT, opts.state ?? "pending", opts.tags ? JSON.stringify(opts.tags) : null);
+    }
+
+    it("an idle seat holding an ordinary pending row is woken, with the row listed", async () => {
+      seedRow("q-plain-1");
+      seedRow("q-plain-2");
+      setOracleState("idle-at-prompt");
+
+      const out = await policyAtNow().evaluate(pendingJob());
+
+      expect(out.action).toBe("send");
+      if (out.action !== "send") return;
+      expect(out.target.session).toBe(SEAT);
+      expect(out.message).toContain("2 queue row(s) pending for you");
+      expect(out.message).toContain("- q-plain-1");
+      expect(out.message).toContain("- q-plain-2");
+      expect(out.notes).toMatchObject({ rows: "pending", qitemId: "q-plain-1" });
+    });
+
+    it("gate mode, the default, still ignores an ordinary pending row", async () => {
+      seedRow("q-plain");
+      setOracleState("idle-at-prompt");
+
+      const out = await policyAtNow().evaluate(makeJob());
+
+      expect(out).toEqual({ action: "skip", reason: "no_pending_gate" });
+    });
+
+    it("a blocked row is parked on purpose, so it doesn't wake the seat", async () => {
+      seedRow("q-parked", { state: "blocked" });
+      setOracleState("idle-at-prompt");
+
+      const out = await policyAtNow().evaluate(pendingJob());
+
+      expect(out).toEqual({ action: "skip", reason: "no_pending_gate" });
+    });
+
+    it("a row changed within min_pending_seconds is left to its own create-time wake", async () => {
+      seedRow("q-just-sent", { updatedAt: "2026-07-03T11:59:30.000Z" }); // 30 s before NOW
+      setOracleState("idle-at-prompt");
+
+      expect(await policyAtNow().evaluate(pendingJob())).toEqual({ action: "skip", reason: "no_pending_gate" });
+      // Past a shorter minimum, the same row wakes the seat.
+      expect((await policyAtNow().evaluate(pendingJob({ rows: "pending", min_pending_seconds: 20 }))).action).toBe("send");
+    });
+
+    it("a busy seat isn't woken", async () => {
+      seedRow("q-plain");
+      setOracleState("working");
+
+      const out = await policyAtNow().evaluate(pendingJob());
+
+      expect(out).toMatchObject({ action: "skip", reason: "seat_active" });
+    });
+
+    it("lists ten rows and points at the queue for the rest", async () => {
+      for (let i = 0; i < 12; i++) seedRow(`q-${String(i).padStart(2, "0")}`);
+      setOracleState("idle-at-prompt");
+
+      const out = await policyAtNow().evaluate(pendingJob());
+
+      expect(out.action).toBe("send");
+      if (out.action !== "send") return;
+      expect(out.message).toContain("- q-09");
+      expect(out.message).not.toContain("- q-10");
+      expect(out.message).toContain(`- and 2 more: rig queue list --destination ${SEAT} --state pending`);
+    });
+
+    it("refuses a malformed context instead of guessing a mode", async () => {
+      seedRow("q-plain");
+      setOracleState("idle-at-prompt");
+
+      expect(await policyAtNow().evaluate(pendingJob({ rows: "everything" }))).toMatchObject({
+        action: "skip",
+        reason: "spec_invalid",
+      });
+      expect(idleGateQitemSpecProblem({ rows: "everything" })).toMatch(/rows must be "gate" or "pending"/);
+      expect(idleGateQitemSpecProblem({ rows: "pending", min_pending_seconds: -1 })).not.toBeNull();
+      expect(idleGateQitemSpecProblem({ rows: "pending", min_pending_seconds: 60 })).toBeNull();
+      expect(idleGateQitemSpecProblem({})).toBeNull();
     });
   });
 });

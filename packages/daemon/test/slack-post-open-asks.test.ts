@@ -142,6 +142,28 @@ describe("rig slack post-open-asks through the gateway", () => {
     expect(new DispatchBuffer(home).pending()).toHaveLength(0);
   });
 
+  it("on Discord, finds the open asks of a person bound to Discord, and none for a Slack-bound one", async () => {
+    const row = await park();
+    const binding = registry.entities[0]!.connectorBindings[0]!;
+    const discordRegistry = { ...registry, entities: [{ ...registry.entities[0]!, connectorBindings: [{ ...binding, kind: "discord" as const, secretsRef: "env:DISCORD_BOT_TOKEN", handle: "244" }] }] };
+    const dispatched: string[] = [];
+    const runAs = (loaded: typeof registry, connectorKind?: "slack" | "discord") => postOpenAsks({
+      queueRepo: repo, home, loadHumanRegistry: () => loaded as never, minimumLevelThatPosts: "NOTICE", actor: "operator@rig", waitMs: 0,
+      dispatch: (_op, ref) => { dispatched.push(ref); return { ok: true } as never; }, ...(connectorKind ? { connectorKind } : {}),
+    });
+    expect((await runAs(discordRegistry)).asks, "the Slack filter (the default) skips a Discord-bound person").toHaveLength(0);
+    const onDiscord = await runAs(discordRegistry, "discord");
+    expect(onDiscord.asks.map((a) => a.qitemId)).toEqual([row.qitemId]);
+    expect((await runAs(registry, "discord")).asks, "a Slack-bound person has no asks on Discord").toHaveLength(0);
+  });
+
+  it("enable's status line names the connector being enabled", async () => {
+    const seed = (connectorKind?: "slack" | "discord") => seedBacklogAsHistory({ queue: makeQueuePorts(repo, { loadHumanRegistry: () => registry }),
+      seen: new SeenStore(seenPath()), filter: { minimumLevel: "NOTICE" }, ...(connectorKind ? { connectorKind } : {}) });
+    expect((await seed()).onlineStatus).toMatch(/^slack outbound ENABLED at enable-time: /);
+    expect((await seed("discord")).onlineStatus).toMatch(/^discord outbound ENABLED at enable-time: /);
+  });
+
   it("running it again, or the same decision replayed, posts nothing more and reports already posted", async () => {
     const row = await park();
     await enable();

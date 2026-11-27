@@ -17,7 +17,7 @@ import { isBlockerLive } from "../queue-repository.js";
 import type { WatchdogJobsRepository } from "../watchdog-jobs-repository.js";
 import { makeQueuePorts } from "../gateway/slack/queue-access.js";
 import { OUTBOUND_OP, toPayload } from "../gateway/slack/outbound-driver.js";
-import { loadConfig } from "../gateway/slack/config.js";
+import { activeChatConnector } from "../gateway/chat-connector.js";
 import { HumanQuietStore, quietHoldFor } from "../gateway/human-quiet-windows.js";
 import type { QueueItem } from "../gateway/slack/queue-access.js";
 import type { Policy, PolicyJob, PolicyEvaluation } from "./types.js";
@@ -191,7 +191,7 @@ function connectorReason(input: { home: string; registry: RunQuietReleaseInput["
 async function currentAlerts(queueRepo: QueueRepository, home: string, registry: RunQuietReleaseInput["registry"]): Promise<QueueItem[] | null> {
   const reg = registry.loadHumanRegistry(home);
   if (!reg.ok) return null;
-  return makeQueuePorts(queueRepo, { loadHumanRegistry: () => reg } as never).listHumanAlerts({ minimumLevel: loadConfig(home).minimumLevelThatPosts });
+  return makeQueuePorts(queueRepo, { loadHumanRegistry: () => reg } as never).listHumanAlerts({ minimumLevel: activeChatConnector(home).config.minimumLevelThatPosts });
 }
 
 /** The gateway's half: re-check a release at post time. `post`: post it. `post-quiet-unreadable`: post it, saying the

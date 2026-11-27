@@ -13,7 +13,7 @@ import { EventBus } from "../src/domain/event-bus.js";
 import { NodeLauncher } from "../src/domain/node-launcher.js";
 import { WatchdogJobsRepository } from "../src/domain/watchdog-jobs-repository.js";
 import { WatchdogHistoryLog } from "../src/domain/watchdog-history-log.js";
-import { WatchdogPolicyEngine, type DeliveryFn } from "../src/domain/watchdog-policy-engine.js";
+import { WatchdogPolicyEngine, parseWatchdogSpec, type DeliveryFn } from "../src/domain/watchdog-policy-engine.js";
 import { makeIdleGateQitemPolicy } from "../src/domain/policies/idle-gate-qitem.js";
 import { createFullTestDb, mockTmuxAdapter } from "./helpers/test-app.js";
 
@@ -507,17 +507,18 @@ describe("W2c watchdog auto-registration — mint altitude", () => {
 // B6 founder ruling — the RULED DEFAULT: auto-registration is NOT default-on. These tests build the
 // registration unit directly with a fake settings store so the gate is exercised without env plumbing.
 describe("B6 — idle-gate auto-registration default-off / opt-in gate", () => {
-  const settings = (autoRegister: string, optIn = "") => ({
+  const settings = (autoRegister: string, optIn = "", pendingRows = "") => ({
     resolveOne: (key: string) => {
       if (key === "policies.idle_gate_qitem.auto_register") return { value: autoRegister };
       if (key === "policies.idle_gate_qitem.opt_in_sessions") return { value: optIn };
+      if (key === "policies.idle_gate_qitem.pending_rows_sessions") return { value: pendingRows };
       if (key === "policies.idle_gate_qitem.scan_interval_seconds") return { value: 60 };
       if (key === "policies.idle_gate_qitem.active_wake_interval_seconds") return { value: 900 };
       throw new Error(`unexpected settings key ${key}`);
     },
   });
 
-  async function build(autoRegister: string, optIn = "") {
+  async function build(autoRegister: string, optIn = "", pendingRows = "") {
     const { WatchdogAutoRegistration } = await import("../src/domain/watchdog-auto-registration.js");
     const db = createFullTestDb();
     const { rig, node, sessionName } = seedCanonicalNode(db, "gate-rig");
@@ -526,7 +527,7 @@ describe("B6 — idle-gate auto-registration default-off / opt-in gate", () => {
     const unit = new WatchdogAutoRegistration({
       db,
       jobsRepo,
-      settingsStore: settings(autoRegister, optIn) as never,
+      settingsStore: settings(autoRegister, optIn, pendingRows) as never,
       warn: () => {},
     });
     return { db, rig, node, sessionName, jobsRepo, unit };
@@ -548,6 +549,25 @@ describe("B6 — idle-gate auto-registration default-off / opt-in gate", () => {
       expect(job).not.toBeNull();
       expect(autoRows(db, sessionName)).toHaveLength(1);
       expect(unit.assertCoverage(node.id, sessionName)).not.toBeNull();
+    } finally { db.close(); }
+  });
+
+  it("a seat named in pending_rows_sessions gets a job that watches every pending row", async () => {
+    const { db, node, sessionName, unit } = await build("off", "", ` other@rig, ${"dev-qa@gate-rig"} `);
+    try {
+      const job = unit.ensure(node.id, sessionName);
+      expect(job).not.toBeNull();
+      expect(autoRows(db, sessionName)).toHaveLength(1);
+      expect(parseWatchdogSpec(job!.specYaml).context).toEqual({ rows: "pending" });
+      expect(unit.assertCoverage(node.id, sessionName)).not.toBeNull();
+    } finally { db.close(); }
+  });
+
+  it("an opted-in seat's job keeps watching gate rows only", async () => {
+    const { db, node, sessionName, unit } = await build("off", "dev-qa@gate-rig");
+    try {
+      const job = unit.ensure(node.id, sessionName);
+      expect(parseWatchdogSpec(job!.specYaml).context).toEqual({});
     } finally { db.close(); }
   });
 

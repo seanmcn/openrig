@@ -152,6 +152,7 @@ export interface RiggedConfig {
       activeWakeIntervalSeconds: number;
       autoRegister: string;
       optInSessions: string;
+      pendingRowsSessions: string;
     };
   };
   snapshots: {
@@ -368,6 +369,7 @@ const DEFAULTS = {
       activeWakeIntervalSeconds: 900,
       autoRegister: "off",
       optInSessions: "",
+      pendingRowsSessions: "",
     },
   },
   snapshots: {
@@ -545,6 +547,7 @@ export const VALID_KEYS = [
   // the daemon settings-store keys (see there for semantics).
   "policies.idle_gate_qitem.auto_register",
   "policies.idle_gate_qitem.opt_in_sessions",
+  "policies.idle_gate_qitem.pending_rows_sessions",
   "snapshots.periodic.enabled",
   "snapshots.periodic.interval_seconds",
   "snapshots.periodic.retention_keep",
@@ -690,6 +693,7 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "policies.idle_gate_qitem.active_wake_interval_seconds": { primary: "OPENRIG_POLICIES_IDLE_GATE_QITEM_ACTIVE_WAKE_INTERVAL_SECONDS" },
   "policies.idle_gate_qitem.auto_register": { primary: "OPENRIG_POLICIES_IDLE_GATE_QITEM_AUTO_REGISTER" },
   "policies.idle_gate_qitem.opt_in_sessions": { primary: "OPENRIG_POLICIES_IDLE_GATE_QITEM_OPT_IN_SESSIONS" },
+  "policies.idle_gate_qitem.pending_rows_sessions": { primary: "OPENRIG_POLICIES_IDLE_GATE_QITEM_PENDING_ROWS_SESSIONS" },
   "snapshots.periodic.enabled": { primary: "OPENRIG_SNAPSHOTS_PERIODIC_ENABLED" },
   "snapshots.periodic.interval_seconds": { primary: "OPENRIG_SNAPSHOTS_PERIODIC_INTERVAL_SECONDS" },
   "snapshots.periodic.retention_keep": { primary: "OPENRIG_SNAPSHOTS_PERIODIC_RETENTION_KEEP" },
@@ -804,6 +808,7 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "policies.idle_gate_qitem.active_wake_interval_seconds": ["policies", "idleGateQitem", "activeWakeIntervalSeconds"],
   "policies.idle_gate_qitem.auto_register": ["policies", "idleGateQitem", "autoRegister"],
   "policies.idle_gate_qitem.opt_in_sessions": ["policies", "idleGateQitem", "optInSessions"],
+  "policies.idle_gate_qitem.pending_rows_sessions": ["policies", "idleGateQitem", "pendingRowsSessions"],
   "snapshots.periodic.enabled": ["snapshots", "periodic", "enabled"],
   "snapshots.periodic.interval_seconds": ["snapshots", "periodic", "intervalSeconds"],
   "snapshots.periodic.retention_keep": ["snapshots", "periodic", "retentionKeep"],
@@ -1485,6 +1490,7 @@ export class ConfigStore {
           activeWakeIntervalSeconds: v("policies.idle_gate_qitem.active_wake_interval_seconds") as number,
           autoRegister: v("policies.idle_gate_qitem.auto_register") as string,
           optInSessions: v("policies.idle_gate_qitem.opt_in_sessions") as string,
+          pendingRowsSessions: v("policies.idle_gate_qitem.pending_rows_sessions") as string,
         },
       },
       snapshots: {

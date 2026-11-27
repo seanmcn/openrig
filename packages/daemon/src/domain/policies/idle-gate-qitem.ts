@@ -16,6 +16,16 @@
 // Cooldown is FREE via the engine's active-wake throttle (configure
 // active_wake_interval_seconds on the registered job). It WAKES ONLY — it
 // never claims or acts on the gate.
+//
+// Pending-rows mode (`context: { rows: pending }`, which auto-registration
+// writes for a seat in policies.idle_gate_qitem.pending_rows_sessions) widens
+// signal A to EVERY row pending for the seat, gate or not, that has sat
+// unchanged for `min_pending_seconds` (default 120). A coordinating seat's
+// ordinary rows have no other re-wake: a create-time wake that lands while the
+// seat is mid-turn is recorded unconfirmed and never re-sent, and the stuck
+// sweep reports an unclaimed row only after an hour, and to the seat's parent.
+// Blocked rows are left out in this mode: a seat parks a row on purpose, and a
+// blocker closing returns the row to pending, which this mode then sees.
 
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -25,6 +35,8 @@ import type { Policy, PolicyEvaluation, PolicyJob } from "./types.js";
 
 export interface IdleGateQitemDeps {
   db: Database.Database;
+  /** Clock for pending-rows mode's minimum age; tests inject one. */
+  now?: () => Date;
   /**
    * Consume the same arbitrated activity oracle as the public surfaces. Only
    * `getSeatStateBySession` is used; typed as a Pick so unit tests can inject
@@ -37,6 +49,30 @@ interface PendingGateRow {
   qitem_id: string;
   tags: string | null;
   tier: string | null;
+  state: string;
+  ts_updated: string;
+}
+
+export type IdleGateRows = "gate" | "pending";
+
+const DEFAULT_MIN_PENDING_SECONDS = 120;
+
+/** What a job's `context:` asks of signal A; null when it is malformed. */
+export function idleGateRowsSpec(
+  context: Record<string, unknown>,
+): { rows: IdleGateRows; minPendingSeconds: number } | null {
+  const rows = context["rows"] ?? "gate";
+  if (rows !== "gate" && rows !== "pending") return null;
+  const min = context["min_pending_seconds"] ?? DEFAULT_MIN_PENDING_SECONDS;
+  if (typeof min !== "number" || !Number.isInteger(min) || min < 0) return null;
+  return { rows, minPendingSeconds: min };
+}
+
+/** The spec check `rig watchdog register` and `update` apply before storing an idle-gate-qitem spec. */
+export function idleGateQitemSpecProblem(context: Record<string, unknown>): string | null {
+  return idleGateRowsSpec(context)
+    ? null
+    : 'idle-gate-qitem context: rows must be "gate" or "pending", and min_pending_seconds a whole number of seconds';
 }
 
 function parseTags(raw: string | null): string[] | null {
@@ -51,11 +87,16 @@ function parseTags(raw: string | null): string[] | null {
 
 export function makeIdleGateQitemPolicy(deps: IdleGateQitemDeps): Policy {
   const { db, seatActivity } = deps;
+  const now = deps.now ?? (() => new Date());
 
   return {
     name: "idle-gate-qitem",
     async evaluate(job: PolicyJob): Promise<PolicyEvaluation> {
       const seat = job.target.session;
+      const spec = idleGateRowsSpec(job.context ?? {});
+      if (!spec) {
+        return { action: "skip", reason: "spec_invalid", notes: { seat, context: job.context } };
+      }
 
       // Signal A — pending/claimable GATE qitems addressed to this seat.
       // Claimable = state IN ('pending','blocked') per the queue claim
@@ -64,17 +105,23 @@ export function makeIdleGateQitemPolicy(deps: IdleGateQitemDeps): Policy {
       // (AC: not-claimable → no wake).
       const rows = db
         .prepare(
-          `SELECT qitem_id, tags, tier FROM queue_items
+          `SELECT qitem_id, tags, tier, state, ts_updated FROM queue_items
              WHERE destination_session = ? AND state IN ('pending','blocked')
              ORDER BY ts_created ASC`,
         )
         .all(seat) as PendingGateRow[];
+      const settledBefore = now().getTime() - spec.minPendingSeconds * 1000;
       const gated = rows
         .map((r) => ({
           qitemId: r.qitem_id,
           roles: effectiveGateRoles({ tags: parseTags(r.tags), tier: r.tier }),
+          row: r,
         }))
-        .filter((r) => r.roles.length > 0);
+        .filter((r) =>
+          spec.rows === "pending"
+            ? r.row.state === "pending" && isSettled(r.row.ts_updated, settledBefore)
+            : r.roles.length > 0,
+        );
       if (gated.length === 0) {
         return { action: "skip", reason: "no_pending_gate" };
       }
@@ -156,7 +203,9 @@ export function makeIdleGateQitemPolicy(deps: IdleGateQitemDeps): Policy {
       const primary = gated[0]!;
       const message =
         job.message ??
-        buildIdleGateMessage({ seat, qitemId: primary.qitemId, roles: primary.roles, pendingCount: gated.length });
+        (spec.rows === "pending"
+          ? buildPendingRowsMessage({ seat, qitemIds: gated.map((g) => g.qitemId) })
+          : buildIdleGateMessage({ seat, qitemId: primary.qitemId, roles: primary.roles, pendingCount: gated.length }));
 
       return {
         action: "send",
@@ -165,6 +214,7 @@ export function makeIdleGateQitemPolicy(deps: IdleGateQitemDeps): Policy {
         conditionReceipt: fingerprint,
         notes: {
           // Audit: which qitem + which activity signal + the join decision.
+          rows: spec.rows,
           qitemId: primary.qitemId,
           gateRoles: primary.roles,
           pendingGateCount: gated.length,
@@ -247,6 +297,29 @@ function gatedConditionFingerprint(db: Database.Database, qitemIds: readonly str
     ].join("|");
   });
   return createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 32);
+}
+
+/** A row untouched since before `settledBefore`; an unparseable time counts as settled. */
+function isSettled(tsUpdated: string, settledBefore: number): boolean {
+  const at = Date.parse(tsUpdated);
+  return Number.isNaN(at) || at <= settledBefore;
+}
+
+const LISTED_PENDING_ROWS = 10;
+
+function buildPendingRowsMessage(input: { seat: string; qitemIds: readonly string[] }): string {
+  const listed = input.qitemIds.slice(0, LISTED_PENDING_ROWS);
+  const more = input.qitemIds.length - listed.length;
+  const lines = [
+    `Idle-seat reminder: you (${input.seat}) are idle with ${input.qitemIds.length} queue row(s) pending for you, unclaimed:`,
+    ...listed.map((id) => `- ${id}`),
+  ];
+  if (more > 0) lines.push(`- and ${more} more: rig queue list --destination ${input.seat} --state pending`);
+  lines.push(
+    "",
+    "Claim and act on each, or hand on any that isn't yours. Before your turn ends, every row you hold is closed, handed on or blocked. This is a WAKE ONLY: nothing has been claimed for you.",
+  );
+  return lines.join("\n");
 }
 
 function buildIdleGateMessage(input: {

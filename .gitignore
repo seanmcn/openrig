@@ -45,3 +45,7 @@ packages/daemon/context-packs/
 
 # Internal build receipts; never commit
 /.evidence/
+
+# Python bytecode (e.g. from running assets/openshell/guest.py)
+__pycache__/
+*.pyc
